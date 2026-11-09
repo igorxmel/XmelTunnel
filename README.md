@@ -53,14 +53,22 @@ type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh root@YOUR_SERVER "mkdir -p ~/.ss
 
 ## Install
 
-1. Download `XmelTunnel.exe` from [Releases](../../releases). It is a single file and needs no installer.
-2. Run it. Settings open on the first launch.
-3. Enter your server (`1.2.3.4`, `user@host` or an alias from `~/.ssh/config`) and the key file.
-4. Click **Check connection**, then **Install proxy on the server**.
-5. Click **Save**, then turn on the profiles you need.
-6. Optional: turn on **Start with Windows**.
+Download from [Releases](../../releases/latest):
+
+- **`XmelTunnel-Setup.exe`** (recommended). Installs for your user only, no admin rights. Adds a Start menu shortcut and appears in Windows *Installed apps*, so uninstalling cleans everything up.
+- **`XmelTunnel.exe`** is a portable single file if you don't want to install anything.
+
+Then:
+
+1. Run it. Settings open on the first launch.
+2. Enter your server (`1.2.3.4`, `user@host` or an alias from `~/.ssh/config`) and the key file.
+3. Click **Check connection**, then **Install proxy on the server**.
+4. Click **Save**, then turn on the profiles you need.
+5. Optional: turn on **Start with Windows**.
 
 Restart the apps you want to route. Claude Code picks up its proxy in new sessions.
+
+**Antivirus and SmartScreen.** The exe is not code-signed yet, so Windows may show "Windows protected your PC". Click *More info → Run anyway*. Every release is built by GitHub Actions from this repository and comes with a SHA-256 checksum. The installer version is less likely to trigger false positives than the portable one. If your antivirus flags it, please [open an issue](../../issues).
 
 ## How to tell it really works
 
@@ -83,12 +91,10 @@ While XmelTunnel is closed, nothing serves the PAC file and Windows falls back t
 
 ## Uninstall
 
-XmelTunnel is a single portable exe with no installer. To remove it cleanly:
+- **Installed with `XmelTunnel-Setup.exe`:** remove *XmelTunnel* in Windows *Settings → Apps → Installed apps*. The uninstaller undoes everything XmelTunnel changed: it puts your previous Windows proxy (PAC) setting back, removes its Claude Code proxy, turns off autostart, and deletes its settings and log.
+- **Portable exe:** open **Settings… → Remove from this PC…** (same cleanup), then delete `XmelTunnel.exe`. If you already deleted it, download it again and run `XmelTunnel.exe --uninstall`.
 
-1. Open **Settings…** and click **Remove from this PC…**. XmelTunnel puts your previous Windows proxy (PAC) setting back, removes its Claude Code proxy, turns off autostart, deletes its settings and log, and closes.
-2. Delete `XmelTunnel.exe`.
-
-If you already deleted the exe, download it again and run `XmelTunnel.exe --uninstall`. Your server is not touched. To remove the proxy there too, run `apt remove tinyproxy` (or your distro's equivalent).
+Your server is not touched. To remove the proxy there too, run `apt remove tinyproxy` (or your distro's equivalent).
 
 ## Build from source
 
@@ -96,8 +102,8 @@ If you already deleted the exe, download it again and run `XmelTunnel.exe --unin
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt pyinstaller pytest
 .venv\Scripts\python -m pytest -q tests
-.venv\Scripts\python -m xmeltunnel          # run
-.venv\Scripts\pyinstaller XmelTunnel.spec    # -> dist\XmelTunnel.exe
+.venv\Scripts\python -m xmeltunnel     # run
+.venv\Scripts\python build.py          # -> dist\XmelTunnel.exe, dist\XmelTunnel-Setup.exe (needs Inno Setup 6+)
 ```
 
 ## Responsible use

@@ -282,9 +282,7 @@ class MainWindow(FramelessWindow):
         time.sleep(0.5)  # let ssh exit before its log/config folder goes away
         done = core.remove_from_pc(self.engine.cfg)
         info(self, APP_NAME, tr("Done. XmelTunnel has removed its traces and will close now. "
-                                "Delete XmelTunnel.exe yourself.") + f"
-
-({', '.join(done) or '—'})")
+                                "Delete XmelTunnel.exe yourself.") + "\n\n(" + (", ".join(done) or "—") + ")")
         self.quitting = True
         QApplication.instance().quit()
 
@@ -469,14 +467,36 @@ class Tray:
         self.app.quit()
 
 
+_mutex = None
+
+
+def hold_app_mutex() -> None:
+    """Named mutex the installer looks for (AppMutex) to ask the user to close XmelTunnel first."""
+    global _mutex
+    try:
+        import ctypes
+
+        _mutex = ctypes.windll.kernel32.CreateMutexW(None, False, "XmelTunnelAppMutex")
+    except Exception:  # noqa: BLE001 — not Windows: nothing to do
+        pass
+
+
 def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
 
-    if "--uninstall" in sys.argv:  # for scripts: same as Settings -> Remove from this PC
-        print(", ".join(core.remove_from_pc(core.load_config())) or "nothing to undo")
+    if "--uninstall" in sys.argv:  # uninstaller and scripts: same as Settings -> Remove from this PC
+        # Runs hidden from the uninstaller: never show dialogs, never touch stdout (a windowed exe has none).
+        try:
+            cfg = core.load_config()
+            core.kill_stale_tunnels(cfg)
+            done = core.remove_from_pc(cfg)
+            if sys.stdout:
+                print(", ".join(done) or "nothing to undo")
+        except Exception:  # noqa: BLE001 — cleanup is best effort, the uninstaller must not hang
+            return 1
         return 0
 
     sock = QLocalSocket()
@@ -489,6 +509,7 @@ def main() -> int:
     QLocalServer.removeServer(INSTANCE_KEY)
     server = QLocalServer()
     server.listen(INSTANCE_KEY)
+    hold_app_mutex()
 
     cfg = core.load_config()
     i18n.set_language(cfg["language"])
