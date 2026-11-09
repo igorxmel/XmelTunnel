@@ -1,7 +1,7 @@
 <p align="center"><img src="media/banner.png" alt="XmelTunnel — your server for chosen sites and apps"></p>
 
 <p align="center">
-  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/igorxmel/XmelTunnel?label=download" alt="Download"></a>
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/igorxmel/XmelTunnel?label=version" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4" alt="Windows 10 | 11">
   &nbsp;·&nbsp; <a href="README.ru.md">Русский</a>
