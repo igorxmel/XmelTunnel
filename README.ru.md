@@ -1,10 +1,13 @@
-<p align="center"><img src="assets/icon.png" width="96" alt=""></p>
+<p align="center"><img src="media/banner-ru.png" alt="XmelTunnel — твой сервер для выбранных сайтов и приложений"></p>
 
-<h1 align="center">XmelTunnel</h1>
+<p align="center">
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/igorxmel/XmelTunnel?label=скачать" alt="Скачать"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4" alt="Windows 10 | 11">
+  &nbsp;·&nbsp; <a href="README.md">English</a>
+</p>
 
-<p align="center">Выбранные сайты и приложения идут через <b>твой сервер</b> по SSH.<br>Остальной интернет — как обычно.</p>
-
-<p align="center"><a href="README.md">English</a></p>
+Выбранные сайты и приложения идут через **твой сервер** по SSH. Остальной интернет — как обычно.
 
 ![Обзор](media/overview-ru.png)
 
@@ -35,6 +38,7 @@ XmelTunnel делает именно это и **проверяет, что вс
   - Его подхватывают браузеры и приложения, которые следуют настройкам прокси Windows: Chrome, Edge, приложения на Electron.
   - Claude Code получает прокси через `~/.claude/settings.json`.
 - **Без тихой утечки.** Если туннель упал, сайты профиля не открываются, а не уходят молча напрямую.
+- **Не боится VPN-клиентов.** Многие VPN-приложения при отключении сбрасывают настройки прокси Windows. Пока профиль включён, XmelTunnel замечает это и возвращает свой PAC.
 - **Проверка утечек.** Для приложений из профиля XmelTunnel смотрит их реальные TCP-соединения и показывает, идёт ли каждое *через туннель* или *напрямую, мимо него*.
 - **Проверка выхода.** Спрашивает у Cloudflare, какой IP и страну тот видит через туннель, и сверяет с твоим сервером.
 - **Уведомления.** Приходят в трех случаях:
@@ -101,4 +105,4 @@ XmelTunnel пускает трафик через сервер, которым �
 
 ## Лицензия
 
-MIT. Флаги взяты из [flag-icons](https://github.com/lipis/flag-icons) (MIT), подробнее — в [THIRD-PARTY.md](THIRD-PARTY.md).
+[GPL v3](LICENSE). Флаги взяты из [flag-icons](https://github.com/lipis/flag-icons) (MIT), подробнее — в [THIRD-PARTY.md](THIRD-PARTY.md).

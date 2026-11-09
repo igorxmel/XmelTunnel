@@ -53,8 +53,9 @@ PRESETS = [
     {
         "id": "antigravity",
         "name": "Antigravity",
+        # antigravity.google/docs/enterprise: global endpoints cloudcode-pa and businessaicode must be reachable.
         "domains": ["antigravity.google", "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com",
-                    "generativelanguage.googleapis.com"],
+                    "businessaicode.googleapis.com", "generativelanguage.googleapis.com"],
         "nets": [],
         "check_url": "",
         "apps": [{"name": "Antigravity", "match": r"\\Antigravity\.exe$", "method": "system"}],
@@ -78,7 +79,8 @@ PRESETS = [
     {
         "id": "cursor",
         "name": "Cursor",
-        "domains": ["cursor.com", "cursor.sh", "cursorapi.com"],
+        # Cursor network help: *.cursor.sh (api2 = main API), *.cursor-cdn.com, *.cursorapi.com.
+        "domains": ["cursor.com", "cursor.sh", "cursorapi.com", "cursor-cdn.com"],
         "nets": [],
         "check_url": "",
         "apps": [{"name": "Cursor", "match": r"\\Cursor\.exe$", "method": "system"}],
@@ -86,6 +88,7 @@ PRESETS = [
     {
         "id": "windsurf",
         "name": "Windsurf",
+        # server.codeium.com / inference.codeium.com (API), *.codeiumdata.com (downloads), windsurf.com (site).
         "domains": ["windsurf.com", "codeium.com", "codeiumdata.com"],
         "nets": [],
         "check_url": "",
@@ -94,7 +97,10 @@ PRESETS = [
     {
         "id": "copilot",
         "name": "GitHub Copilot",
-        "domains": ["githubcopilot.com", "copilot-proxy.githubusercontent.com"],
+        # docs.github.com Copilot allowlist: *.githubcopilot.com (+ individual/business/enterprise), copilot-* hosts.
+        # api.github.com is left out on purpose: it would send all GitHub API traffic through the tunnel.
+        "domains": ["githubcopilot.com", "copilot-proxy.githubusercontent.com",
+                    "copilot-telemetry.githubusercontent.com", "origin-tracker.githubusercontent.com"],
         "nets": [],
         "check_url": "",
         "apps": [],

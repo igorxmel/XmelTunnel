@@ -184,3 +184,21 @@ def test_russian_translation():
     i18n.set_language("ru")
     assert i18n.tr("Overview") == "Обзор"
     assert i18n.tr("{n} s ago", n=5) == "5 с назад"
+
+
+def test_pac_restored_after_vpn_client_reset(monkeypatch):
+    import threading
+    from types import SimpleNamespace
+    reg = {}
+    monkeypatch.setattr(core, "_reg_get", lambda path, name: reg.get(name))
+    monkeypatch.setattr(core, "_reg_set", lambda path, name, v: reg.pop(name, None) if v is None else reg.update({name: v}))
+    monkeypatch.setattr(core, "_notify_inet_changed", lambda: None)
+    c = cfg()
+    fake = SimpleNamespace(cfg=c, cfg_lock=threading.RLock(), save=lambda: None)
+    assert core.Engine._restore_pac(fake) is True          # wiped by a VPN client -> back
+    assert reg["AutoConfigURL"] == core.pac_url(c)
+    reg["AutoConfigURL"] = "http://corp/proxy.pac"           # someone else's PAC
+    fake._pac_restored_at = 0
+    core.Engine._restore_pac(fake)
+    assert reg["AutoConfigURL"] == core.pac_url(c) and c["prev_autoconfig"] == "http://corp/proxy.pac"
+    assert core.Engine._restore_pac(fake) is False           # rate-limited

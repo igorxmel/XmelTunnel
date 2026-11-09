@@ -1,10 +1,13 @@
-<p align="center"><img src="assets/icon.png" width="96" alt=""></p>
+<p align="center"><img src="media/banner.png" alt="XmelTunnel — your server for chosen sites and apps"></p>
 
-<h1 align="center">XmelTunnel</h1>
+<p align="center">
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/igorxmel/XmelTunnel?label=download" alt="Download"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue" alt="GPL-3.0"></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4" alt="Windows 10 | 11">
+  &nbsp;·&nbsp; <a href="README.ru.md">Русский</a>
+</p>
 
-<p align="center">Send chosen sites and apps through <b>your own server</b> over SSH.<br>Everything else stays on your normal connection.</p>
-
-<p align="center"><a href="README.ru.md">Русский</a></p>
+Send chosen sites and apps through **your own server** over SSH. Everything else stays on your normal connection.
 
 ![Overview](media/overview.png)
 
@@ -26,6 +29,7 @@ XmelTunnel does exactly that and **checks that it actually works**. It doesn't j
 - **Profiles.** A profile is a list of domains that go through the tunnel. Turn profiles on and off with a switch. Presets are included for Claude, ChatGPT, Gemini, Antigravity, Grok, Perplexity, Cursor, Windsurf and GitHub Copilot. You can also add your own list.
 - **Per-app routing without a VPN.** A PAC file sends only the profile's domains through the tunnel. Browsers and desktop apps that follow Windows proxy settings (Chrome, Edge, Electron apps) pick it up. Claude Code gets its proxy through `~/.claude/settings.json`.
 - **Fails closed.** If the tunnel is down, profile sites do not load. They never quietly go direct.
+- **Survives VPN clients.** Many VPN apps reset the Windows proxy settings when they disconnect. While a profile is on, XmelTunnel notices it and puts its PAC back.
 - **Leak watching.** For apps in a profile, XmelTunnel looks at their real TCP connections. It shows whether each app goes *through the tunnel* or *directly, around it*.
 - **Exit check.** It asks Cloudflare which IP and country it sees through the tunnel and compares the answer with your server.
 - **Notifications.** You get one when a watched app starts while the tunnel is down, when an app leaks around the tunnel, or when your VPN is off (optional, for servers reachable only through a VPN).
@@ -93,4 +97,4 @@ XmelTunnel routes traffic through a server **you** control. You are responsible 
 
 ## License
 
-MIT. Flag icons come from [flag-icons](https://github.com/lipis/flag-icons) (MIT); see [THIRD-PARTY.md](THIRD-PARTY.md).
+[GPL v3](LICENSE). Flag icons come from [flag-icons](https://github.com/lipis/flag-icons) (MIT); see [THIRD-PARTY.md](THIRD-PARTY.md).

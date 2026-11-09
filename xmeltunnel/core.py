@@ -687,6 +687,27 @@ class Engine:
             targets[p["id"]] = (resolve_ips(p["domains"]), nets)
         self.targets, self._resolved_at = targets, time.time()
 
+    def _restore_pac(self) -> bool:
+        """A profile is on, but the PAC URL is gone from Windows settings.
+
+        VPN clients (Happ, v2rayN, Clash…) reset the system proxy when they disconnect and wipe our
+        PAC URL with it. The profile switch is the user's intent, so put the PAC back.
+        """
+        now = time.time()
+        if now - getattr(self, "_pac_restored_at", 0) < 5:
+            return False
+        self._pac_restored_at = now
+        with self.cfg_lock:
+            current = _reg_get(INET_KEY, "AutoConfigURL")
+            # someone else's PAC (not a reset) is kept as the one to restore later
+            if current and current != pac_url(self.cfg):
+                self.cfg["prev_autoconfig"] = current
+            _reg_set(INET_KEY, "AutoConfigURL", pac_url(self.cfg))
+            _notify_inet_changed()
+            self.save()
+        log(f"Windows proxy settings were reset (was: {current!r}) — PAC restored")
+        return pac_installed(self.cfg)
+
     def _monitor(self) -> None:
         while self.running:
             self._refresh_targets()
@@ -696,6 +717,8 @@ class Engine:
             vpn = vpn_adapter(cfg["vpn_adapter"])
             up = self.tunnel_up()
             pac = pac_installed(cfg)
+            if not pac and enabled_profiles(cfg):
+                pac = self._restore_pac()
             with self.lock:
                 self.state.update(vpn=vpn, tunnel=up, apps=apps, pac=pac)
                 if not up:
