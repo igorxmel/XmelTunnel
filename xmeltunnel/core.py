@@ -278,6 +278,35 @@ def set_autostart(on: bool) -> None:
     _reg_set(RUN_KEY, RUN_NAME, autostart_command() if on else None)
 
 
+def remove_from_pc(cfg: dict, claude_settings: str = CLAUDE_SETTINGS, data: str | None = None) -> list[str]:
+    """Undo everything XmelTunnel changed on this PC. Returns what was done (for the user).
+
+    The server is left alone: the proxy there listens on localhost only and is harmless.
+    """
+    import shutil
+
+    done = []
+    current = _reg_get(INET_KEY, "AutoConfigURL")
+    if current == pac_url(cfg):
+        _reg_set(INET_KEY, "AutoConfigURL", cfg.get("prev_autoconfig"))
+        _notify_inet_changed()
+        done.append("pac")
+    try:
+        if claude_code_proxy_on(cfg, claude_settings):
+            set_claude_code_proxy(cfg, False, claude_settings)
+            done.append("claude_code")
+    except (OSError, ValueError) as e:
+        log(f"remove: Claude Code settings: {e}")
+    if _reg_get(RUN_KEY, RUN_NAME) is not None:
+        _reg_set(RUN_KEY, RUN_NAME, None)
+        done.append("autostart")
+    path = data or data_dir()
+    shutil.rmtree(path, ignore_errors=True)
+    if not os.path.exists(path):
+        done.append("data")
+    return done
+
+
 # ---------- watching ----------
 
 def in_nets(ip: str, nets: list) -> bool:

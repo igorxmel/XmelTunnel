@@ -265,13 +265,28 @@ class MainWindow(FramelessWindow):
 
     def open_settings(self) -> None:
         lang = self.engine.cfg["language"]
-        SettingsDialog(self, self.engine).exec()
+        dlg = SettingsDialog(self, self.engine)
+        dlg.exec()
+        if dlg.removed:
+            return self.remove_from_pc()
         if self.engine.cfg["language"] != lang:
             from xmeltunnel.ui.frameless import info
             i18n.set_language(self.engine.cfg["language"])
             info(self, APP_NAME, "Restart XmelTunnel to switch the language.\n\n"
                                  "Перезапусти XmelTunnel, чтобы сменить язык.")
         self.refresh()
+
+    def remove_from_pc(self) -> None:
+        from xmeltunnel.ui.frameless import info
+        self.engine.stop()
+        time.sleep(0.5)  # let ssh exit before its log/config folder goes away
+        done = core.remove_from_pc(self.engine.cfg)
+        info(self, APP_NAME, tr("Done. XmelTunnel has removed its traces and will close now. "
+                                "Delete XmelTunnel.exe yourself.") + f"
+
+({', '.join(done) or '—'})")
+        self.quitting = True
+        QApplication.instance().quit()
 
     def edit_profile(self, pid: str | None) -> None:
         p = next((x for x in self.engine.cfg["profiles"] if x["id"] == pid), None) if pid else None
@@ -459,6 +474,10 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
+
+    if "--uninstall" in sys.argv:  # for scripts: same as Settings -> Remove from this PC
+        print(", ".join(core.remove_from_pc(core.load_config())) or "nothing to undo")
+        return 0
 
     sock = QLocalSocket()
     sock.connectToServer(INSTANCE_KEY)

@@ -202,3 +202,32 @@ def test_pac_restored_after_vpn_client_reset(monkeypatch):
     core.Engine._restore_pac(fake)
     assert reg["AutoConfigURL"] == core.pac_url(c) and c["prev_autoconfig"] == "http://corp/proxy.pac"
     assert core.Engine._restore_pac(fake) is False           # rate-limited
+
+
+def test_remove_from_pc_undoes_everything(monkeypatch, tmp_path):
+    reg = {}
+    monkeypatch.setattr(core, "_reg_get", lambda path, name: reg.get(name))
+    monkeypatch.setattr(core, "_reg_set", lambda path, name, v: reg.pop(name, None) if v is None else reg.update({name: v}))
+    monkeypatch.setattr(core, "_notify_inet_changed", lambda: None)
+    c = cfg(prev_autoconfig="http://corp/proxy.pac")
+    reg.update(AutoConfigURL=core.pac_url(c), **{core.RUN_NAME: "x.exe"})
+    settings = str(tmp_path / "settings.json")
+    with open(settings, "w", encoding="utf-8") as f:
+        json.dump({"model": "m"}, f)
+    core.set_claude_code_proxy(c, True, settings)
+    data = tmp_path / "XmelTunnel"
+    data.mkdir()
+    (data / "config.json").write_text("{}")
+    done = core.remove_from_pc(c, settings, str(data))
+    assert set(done) == {"pac", "claude_code", "autostart", "data"}
+    assert reg == {"AutoConfigURL": "http://corp/proxy.pac"}         # the user's own PAC is back
+    assert json.load(open(settings, encoding="utf-8")) == {"model": "m"}
+    assert not data.exists()
+
+
+def test_remove_from_pc_leaves_foreign_pac(monkeypatch, tmp_path):
+    reg = {"AutoConfigURL": "http://corp/proxy.pac"}
+    monkeypatch.setattr(core, "_reg_get", lambda path, name: reg.get(name))
+    monkeypatch.setattr(core, "_reg_set", lambda path, name, v: reg.update({name: v}))
+    core.remove_from_pc(cfg(), str(tmp_path / "none.json"), str(tmp_path / "d"))
+    assert reg["AutoConfigURL"] == "http://corp/proxy.pac"

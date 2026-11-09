@@ -103,6 +103,9 @@ class SettingsDialog(FramelessDialog):
         row.addWidget(self.b_check)
         row.addWidget(self.b_install)
         row.addStretch()
+        self.removed = False
+        rm = QPushButton(tr("Remove from this PC…"), objectName="link")
+        rm.clicked.connect(self.on_remove)
         cancel = QPushButton(tr("Cancel"))
         cancel.clicked.connect(self.reject)
         ok = QPushButton(tr("Save"), objectName="primary")
@@ -111,6 +114,16 @@ class SettingsDialog(FramelessDialog):
         row.addWidget(cancel)
         row.addWidget(ok)
         lay.addLayout(row)
+        low = QHBoxLayout()
+        low.addWidget(rm)
+        low.addStretch()
+        lay.addLayout(low)
+
+    def on_remove(self) -> None:
+        msg = tr(i18n.REMOVE_EN)
+        if confirm(self, tr("Remove from this PC…"), msg, yes=tr("Remove")):
+            self.removed = True
+            self.accept()
 
     def collect(self) -> dict | None:
         out, errors = core.validate({k: e.text() for k, e in self.edits.items()})

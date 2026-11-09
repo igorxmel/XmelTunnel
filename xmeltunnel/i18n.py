@@ -34,6 +34,13 @@ def tr(text: str, **kw) -> str:
     return out.format(**kw) if kw else out
 
 
+REMOVE_EN = ("XmelTunnel will undo everything it changed on this PC:\n"
+             "• the PAC address in Windows proxy settings (your previous one comes back)\n"
+             "• the Claude Code proxy in ~/.claude/settings.json\n"
+             "• autostart\n"
+             "• its own settings and log\n\n"
+             "Your server is not touched. After that just delete XmelTunnel.exe.\n\nContinue?")
+
 RU = {
     # general
     "Overview": "Обзор",
@@ -170,4 +177,16 @@ RU = {
         "Пока XmelTunnel закрыт, PAC-файл никто не раздаёт, и Windows пустит приложения напрямую, "
         "мимо твоего сервера.\n\nВсё равно выйти?",
     "XmelTunnel keeps working in the tray.": "XmelTunnel продолжает работать в трее.",
+    # removal
+    "Remove from this PC…": "Удалить с этого ПК…",
+    REMOVE_EN:
+        "XmelTunnel вернёт всё, что менял на этом ПК:\n"
+        "• адрес PAC в настройках прокси Windows (вернётся прежний)\n"
+        "• прокси Claude Code в ~/.claude/settings.json\n"
+        "• автозапуск\n"
+        "• свои настройки и журнал\n\n"
+        "Сервер не трогается. После этого просто удали XmelTunnel.exe.\n\nПродолжить?",
+    "Done. XmelTunnel has removed its traces and will close now. Delete XmelTunnel.exe yourself.":
+        "Готово: XmelTunnel убрал за собой следы и сейчас закроется. Сам XmelTunnel.exe удали вручную.",
+    "Remove": "Удалить",
 }

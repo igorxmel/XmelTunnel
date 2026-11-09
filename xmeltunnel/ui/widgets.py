@@ -296,7 +296,11 @@ class KeyValue(QWidget):
 
 
 def app_icon(level: str | None = None, size: int = 64) -> QIcon:
-    """App icon: dark tile with an arc. With level, adds a status dot (tray)."""
+    """App icon: an X made of two paths on a dark tile.
+
+    The white path is your normal connection, the coloured one goes through your server. Without
+    level it is brand green; with level (tray) the coloured path shows the state instead of a dot.
+    """
     pm = QPixmap(size, size)
     pm.fill(Qt.GlobalColor.transparent)
     s = size / 64
@@ -305,12 +309,15 @@ def app_icon(level: str | None = None, size: int = 64) -> QIcon:
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(QColor("#202024"))
     p.drawRoundedRect(QRectF(4 * s, 4 * s, 56 * s, 56 * s), 14 * s, 14 * s)
-    pen = QPen(QColor("#f2f2f3"), 7 * s, cap=Qt.PenCapStyle.RoundCap)
-    p.setPen(pen)
-    p.drawArc(QRectF(15 * s, 15 * s, 34 * s, 34 * s), 45 * 16, 270 * 16)
-    if level:
-        p.setPen(QPen(QColor("#202024"), 3 * s))
-        p.setBrush(QColor(theme.level_color(level)))
-        p.drawEllipse(QRectF(38 * s, 38 * s, 24 * s, 24 * s))
+    p.setPen(QPen(QColor("#f2f2f3"), 7 * s, cap=Qt.PenCapStyle.RoundCap))
+    p.drawLine(QPointF(18 * s, 46 * s), QPointF(46 * s, 18 * s))
+    route = QColor(BRAND_GREEN) if level is None else QColor(DARK_LEVEL.get(level, DARK_LEVEL["unknown"]))
+    p.setPen(QPen(route, 7 * s, cap=Qt.PenCapStyle.RoundCap))
+    p.drawLine(QPointF(18 * s, 18 * s), QPointF(46 * s, 46 * s))
     p.end()
     return QIcon(pm)
+
+
+BRAND_GREEN = "#4cc38a"
+# The icon tile is always dark, so it uses the dark-theme state colours whatever the Windows theme is.
+DARK_LEVEL = {"ok": "#4cc38a", "warn": "#d9a441", "down": "#f0616d", "unknown": "#8a8a92"}

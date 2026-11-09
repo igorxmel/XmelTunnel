@@ -81,6 +81,15 @@ Nothing is installed system-wide, and no admin rights are needed.
 
 While XmelTunnel is closed, nothing serves the PAC file and Windows falls back to direct connections. Keep it running, or turn profiles off before quitting.
 
+## Uninstall
+
+XmelTunnel is a single portable exe with no installer. To remove it cleanly:
+
+1. Open **Settings…** and click **Remove from this PC…**. XmelTunnel puts your previous Windows proxy (PAC) setting back, removes its Claude Code proxy, turns off autostart, deletes its settings and log, and closes.
+2. Delete `XmelTunnel.exe`.
+
+If you already deleted the exe, download it again and run `XmelTunnel.exe --uninstall`. Your server is not touched. To remove the proxy there too, run `apt remove tinyproxy` (or your distro's equivalent).
+
 ## Build from source
 
 ```powershell
