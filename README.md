@@ -33,6 +33,12 @@ XmelTunnel does exactly that and **checks that it actually works**. It doesn't j
 - **Leak watching.** For apps in a profile, XmelTunnel looks at their real TCP connections. It shows whether each app goes *through the tunnel* or *directly, around it*.
 - **Exit check.** It asks Cloudflare which IP and country it sees through the tunnel and compares the answer with your server.
 - **Notifications.** You get one when a watched app starts while the tunnel is down, when an app leaks around the tunnel, or when your VPN is off (optional, for servers reachable only through a VPN).
+- **Routing mode (since 0.2.0).** A whitelist for the whole PC on top of your VPN:
+  - everything goes **direct**, through your normal connection;
+  - only the programs, folders, domains and subnets of the first list go through the **VPN**;
+  - only the second list goes through **your server** (over the VPN if the server is reachable only through it).
+
+  Handy when a game or a bank needs your normal connection and the rest needs the VPN, or when a game needs exactly your server's exit. Programs and folders are more reliable than domains: all their traffic goes, including voice and game UDP. See «Routing mode» below.
 - **Tray app.** A dark or light UI follows Windows. English and Russian.
 
 | Profile editor | Settings |
@@ -70,6 +76,19 @@ Restart the apps you want to route. Claude Code picks up its proxy in new sessio
 
 **Antivirus and SmartScreen.** The exe is not code-signed yet, so Windows may show "Windows protected your PC". Click *More info → Run anyway*. Every release is built by GitHub Actions from this repository and comes with a SHA-256 checksum. The installer version is less likely to trigger false positives than the portable one. If your antivirus flags it, please [open an issue](../../issues).
 
+## Routing mode
+
+Needs a VPN client in TUN mode (Happ, v2rayN, Throne, WireGuard and the like): XmelTunnel sends traffic into its adapter and needs none of its keys.
+
+1. Turn the VPN on.
+2. On the «Routing mode» card press «Lists…» and fill in what goes through the VPN and what through your server. One entry per line: `Discord.exe`, `D:\Games\Game\` (every program in the folder), `youtube.com`, `10.0.0.0/8`.
+3. For the «through your server» list press «Install on the server» once. It installs Shadowsocks on sing-box over SSH (TCP and UDP, port 8388 by default). If your hosting has its own firewall in the control panel, open that port there.
+4. Flip the switch and confirm the admin rights request: the virtual adapter needs them.
+
+The card shows the IP and country each of the three paths exits with. On first use XmelTunnel downloads sing-box from its official release page (about 33 MB) and checks its checksum, and checks it again before every elevated start. The mode turns off together with XmelTunnel.
+
+Note: if your server is blocked in your country, local services won't open through it, since they sit behind the same filters. Keep local things direct.
+
 ## How to tell it really works
 
 - The ring is green, and the exit line shows your server's IP and country.
@@ -84,8 +103,9 @@ Restart the apps you want to route. Claude Code picks up its proxy in new sessio
 | Claude Code proxy | `env` block in `~/.claude/settings.json` | while a profile with Claude Code is on. Only values it wrote itself are removed |
 | Autostart | `HKCU\…\Run\XmelTunnel` | only if you turn it on |
 | Config and log | `%APPDATA%\XmelTunnel` | always |
+| Virtual adapter `xt-route` and its routes | sing-box | only while the routing mode is on |
 
-Nothing is installed system-wide, and no admin rights are needed.
+Nothing is installed system-wide. Admin rights are needed only by the routing mode.
 
 While XmelTunnel is closed, nothing serves the PAC file and Windows falls back to direct connections. Keep it running, or turn profiles off before quitting.
 

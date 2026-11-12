@@ -5,7 +5,13 @@
 Writes media/banner.png (1280x420), media/social.png and media/social-ru.png (1280x640, GitHub social preview).
 """
 
+
 from __future__ import annotations
+import os as _os, tempfile as _tf
+# Never touch the real %APPDATA%\XmelTunnel: these tools build fake engines that may save.
+_tmp = _tf.mkdtemp(prefix="xt-tools-")
+_os.environ["APPDATA"] = _os.path.join(_tmp, "appdata")
+_os.environ["USERPROFILE"] = _os.path.join(_tmp, "home")
 
 import os
 import sys

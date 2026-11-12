@@ -68,8 +68,78 @@ echo XT_INSTALLED
 """
 
 
-def _run(cfg: dict, script: str, timeout: int) -> subprocess.CompletedProcess:
+# Routing mode: Shadowsocks 2022 on sing-box (TCP + UDP, so games work). Pinned official build, checked by SHA-256.
+# The key is made on the server once and kept in /etc/xmeltunnel (root only); re-running keeps it.
+SS_SCRIPT = r"""
+set -e
+[ "$(id -u)" = 0 ] && SUDO= || SUDO=sudo
+V=@@VER@@
+case "$(uname -m)" in
+  x86_64|amd64) A=amd64; H=@@SHA_AMD64@@ ;;
+  aarch64|arm64) A=arm64; H=@@SHA_ARM64@@ ;;
+  *) echo "XT_ERR unsupported CPU: $(uname -m)"; exit 1 ;;
+esac
+BIN=/usr/local/bin/sing-box
+if ! { [ -x $BIN ] && $BIN version 2>/dev/null | grep -q "version $V"; }; then
+  command -v curl >/dev/null || { echo "XT_ERR curl is missing: install the proxy first"; exit 1; }
+  T=$(mktemp -d)
+  curl -fsSL -m 300 -o $T/sb.tgz "https://github.com/SagerNet/sing-box/releases/download/v$V/sing-box-$V-linux-$A.tar.gz" \
+    || { echo "XT_ERR could not download sing-box from GitHub"; rm -rf $T; exit 1; }
+  echo "$H  $T/sb.tgz" | sha256sum -c - >/dev/null 2>&1 || { echo "XT_ERR sing-box checksum mismatch"; rm -rf $T; exit 1; }
+  tar -xzf $T/sb.tgz -C $T
+  $SUDO install -m 755 $T/sing-box-$V-linux-$A/sing-box $BIN
+  rm -rf $T
+fi
+$SUDO mkdir -p /etc/xmeltunnel
+$SUDO chmod 700 /etc/xmeltunnel
+[ -s /etc/xmeltunnel/ss.key ] || $BIN generate rand --base64 16 | $SUDO tee /etc/xmeltunnel/ss.key >/dev/null
+KEY=$($SUDO cat /etc/xmeltunnel/ss.key)
+$SUDO tee /etc/xmeltunnel/ss.json >/dev/null <<EOF
+{"log": {"level": "warn"},
+ "inbounds": [{"type": "shadowsocks", "listen": "::", "listen_port": @@SSPORT@@,
+               "method": "2022-blake3-aes-128-gcm", "password": "$KEY"}],
+ "outbounds": [{"type": "direct"}]}
+EOF
+$SUDO chmod 600 /etc/xmeltunnel/ss.json /etc/xmeltunnel/ss.key
+$BIN check -c /etc/xmeltunnel/ss.json
+if command -v systemctl >/dev/null && [ -d /run/systemd/system ]; then
+  $SUDO tee /etc/systemd/system/xmeltunnel-ss.service >/dev/null <<EOF
+[Unit]
+Description=XmelTunnel routing mode (Shadowsocks)
+After=network-online.target
+[Service]
+ExecStart=$BIN run -c /etc/xmeltunnel/ss.json
+Restart=on-failure
+LimitNOFILE=65535
+[Install]
+WantedBy=multi-user.target
+EOF
+  $SUDO systemctl daemon-reload
+  $SUDO systemctl enable xmeltunnel-ss >/dev/null 2>&1
+  $SUDO systemctl restart xmeltunnel-ss
+else
+  $SUDO pkill -f "xmeltunnel/ss.json" 2>/dev/null || true
+  $SUDO sh -c "nohup $BIN run -c /etc/xmeltunnel/ss.json >/dev/null 2>&1 &"
+fi
+if command -v ufw >/dev/null && $SUDO ufw status 2>/dev/null | grep -q "Status: active"; then
+  $SUDO ufw allow @@SSPORT@@ >/dev/null
+elif command -v firewall-cmd >/dev/null && $SUDO firewall-cmd --state >/dev/null 2>&1; then
+  $SUDO firewall-cmd -q --permanent --add-port=@@SSPORT@@/tcp --add-port=@@SSPORT@@/udp && $SUDO firewall-cmd -q --reload
+fi
+sleep 1
+if command -v systemctl >/dev/null && [ -d /run/systemd/system ]; then
+  systemctl is-active -q xmeltunnel-ss || { echo "XT_ERR the service did not start"; exit 1; }
+fi
+echo "XT_SS_OK $KEY"
+"""
+SING_BOX_LINUX_SHA = {"amd64": "699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968",
+                      "arm64": "436441f76ee2f7fe21b5b2d426d3cb261a480455a704865789ad533e4273ec26"}
+
+
+def _run(cfg: dict, script: str, timeout: int, extra: dict | None = None) -> subprocess.CompletedProcess:
     cmd = ssh_args(cfg) + ["-o", "ConnectTimeout=12", cfg["server"], "sh -s"]
+    for k, v in (extra or {}).items():
+        script = script.replace(k, v)
     # Bytes, not text mode: on Windows text mode turns LF into CRLF and breaks the shell script.
     body = script.replace("PORT", str(int(cfg["remote_proxy_port"]))).replace(chr(13), "").encode()
     r = subprocess.run(cmd, input=body, capture_output=True, timeout=timeout, creationflags=NO_WINDOW)
@@ -117,3 +187,21 @@ def install(cfg: dict) -> tuple[bool, str]:
         ip = msg.rsplit(" ", 1)[-1]
         return True, tr("Proxy installed and answers. Exit IP: {ip}", ip=ip)
     return False, msg
+
+
+def install_ss(cfg: dict, port: int) -> tuple[bool, str, str]:
+    """Install the routing mode's server part. (ok, message, key)."""
+    from xmeltunnel.routing import SING_BOX_VERSION
+
+    extra = {"@@VER@@": SING_BOX_VERSION, "@@SHA_AMD64@@": SING_BOX_LINUX_SHA["amd64"],
+             "@@SHA_ARM64@@": SING_BOX_LINUX_SHA["arm64"], "@@SSPORT@@": str(int(port))}
+    try:
+        r = _run(cfg, SS_SCRIPT, 600, extra)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, tr("Install failed: {err}", err=type(e).__name__), ""
+    m = re.search(r"XT_SS_OK (\S+)", r.stdout or "")
+    if not m:
+        e = re.search(r"XT_ERR (.+)", r.stdout or "")
+        return False, tr("Install failed: {err}", err=e.group(1) if e else _last_error(r)), ""
+    return True, tr("Shadowsocks is installed on port {port}. If your hosting has its own firewall "
+                    "in the control panel, open TCP and UDP {port} there.", port=port), m.group(1)

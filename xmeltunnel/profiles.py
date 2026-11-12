@@ -1,6 +1,13 @@
-"""Profiles: a set of domains that go through the tunnel, plus the apps we watch for leaks.
+"""Profiles: a named set of sites, programs, folders and subnets, and where they go.
 
-A profile is plain data so users can add their own. Presets are just ready-made profiles.
+target:
+  server — through your server. Sites work always (PAC + SSH); programs, folders and subnets need the
+           routing mode (they go by Shadowsocks then).
+  vpn    — through your VPN client's adapter; needs the routing mode.
+  direct — your normal connection; needs the routing mode (useful when everything else goes elsewhere).
+
+entries are the user's lines as typed (comments kept); domains are derived from them for the PAC file.
+Apps are watched for leaks (server profiles only). Presets are just ready-made profiles.
 
 App methods:
   system       — the app follows the Windows proxy settings (browsers on Chromium, Electron apps).
@@ -15,6 +22,7 @@ import ipaddress
 import re
 
 METHODS = ("system", "claude_code")
+TARGETS = ("server", "vpn", "direct")
 
 PRESETS = [
     {
@@ -106,6 +114,25 @@ PRESETS = [
         "apps": [],
     },
     {
+        "id": "blocked",
+        "name": "Often blocked",
+        "target": "vpn",
+        "entries": [
+            "# YouTube", "youtube.com", "youtu.be", "googlevideo.com", "ytimg.com", "ggpht.com",
+            "youtube-nocookie.com", "youtubei.googleapis.com",
+            "# Discord (the whole app, so voice works too)", "Discord.exe", "discord.com", "discord.gg",
+            "discordapp.com", "discordapp.net", "discord.media",
+            "# Telegram", "Telegram.exe", "telegram.org", "t.me",
+            "# Meta / X", "instagram.com", "cdninstagram.com", "facebook.com", "fbcdn.net", "whatsapp.com",
+            "x.com", "twitter.com", "twimg.com",
+            "# Other", "linkedin.com", "medium.com", "patreon.com", "soundcloud.com", "spotify.com", "scdn.co",
+        ],
+        "domains": [],
+        "nets": [],
+        "check_url": "",
+        "apps": [],
+    },
+    {
         "id": "custom",
         "name": "My sites",
         "domains": [],
@@ -120,13 +147,6 @@ _DOMAIN = re.compile(r"^(?=.{1,253}$)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$")
 
 def preset(pid: str) -> dict:
     return copy.deepcopy(next(p for p in PRESETS if p["id"] == pid))
-
-
-def default_profiles() -> list[dict]:
-    """First run: Claude preset, switched off until the user turns it on."""
-    p = preset("claude")
-    p["enabled"] = False
-    return [p]
 
 
 def clean_domain(text: str) -> str | None:
@@ -151,10 +171,18 @@ def parse_domains(text: str) -> tuple[list[str], list[str]]:
 
 
 def normalize(p: dict) -> dict:
-    """Fill missing keys so old or hand-edited configs still load."""
+    """Fill missing keys so old or hand-edited configs still load (0.1 profiles had only domains)."""
+    from xmeltunnel.routing import parse_list
+
     out = {"id": str(p.get("id") or "custom"), "name": str(p.get("name") or "Profile"),
            "enabled": bool(p.get("enabled", False)), "check_url": str(p.get("check_url") or "")}
-    out["domains"] = [d for d in (clean_domain(x) for x in p.get("domains", [])) if d]
+    out["target"] = p.get("target") if p.get("target") in TARGETS else "server"
+    entries = p.get("entries")
+    if not isinstance(entries, list):
+        entries = list(p.get("domains", []))
+    out["entries"] = [str(x).rstrip() for x in entries]
+    parsed = parse_list(out["entries"])
+    out["domains"] = [d for d in (clean_domain(x) for x in parsed["domains"]) if d]
     nets = []
     for n in p.get("nets", []):
         try:
@@ -181,3 +209,22 @@ def app_matches(app: dict, exe_path: str) -> bool:
 def matches_domain(host: str, domains: list[str]) -> bool:
     host = host.lower().rstrip(".")
     return any(host == d or host.endswith("." + d) for d in domains)
+
+
+def counts(p: dict) -> dict:
+    """How many sites, programs (incl. folders) and subnets a profile holds."""
+    from xmeltunnel.routing import parse_list
+
+    parsed = parse_list(p["entries"])
+    return {"sites": len(parsed["domains"]), "apps": len(parsed["procs"]) + len(parsed["folders"]),
+            "nets": len(parsed["cidrs"])}
+
+
+def needs_routing(p: dict) -> bool:
+    """True if part of this profile works only while the routing mode is on."""
+    from xmeltunnel.routing import parse_list
+
+    if p["target"] != "server":
+        return True
+    parsed = parse_list(p["entries"])
+    return bool(parsed["procs"] or parsed["folders"] or parsed["cidrs"])

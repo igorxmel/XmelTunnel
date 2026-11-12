@@ -7,5 +7,6 @@
 | [Qt 6](https://www.qt.io/) | user interface (bundled in the exe) | LGPL v3 |
 | [psutil](https://github.com/giampaolo/psutil) | processes and connections | BSD-3-Clause |
 | [tinyproxy](https://tinyproxy.github.io/) | installed on *your* server by the setup button | GPL v2 |
+| [sing-box](https://github.com/SagerNet/sing-box) | routing mode: downloaded from its official release on first use (SHA-256 pinned), and installed on *your* server by «Install on the server» | GPL v3 or later |
 
 XmelTunnel itself is licensed under the GPL v3 (see LICENSE), the same as PyQt6 it is built on.

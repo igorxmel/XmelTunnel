@@ -22,7 +22,7 @@ sys.path.insert(0, ROOT)
 from xmeltunnel import APP_NAME, __version__  # noqa: E402
 
 PUBLISHER = "igorxmel"
-DESCRIPTION = "XmelTunnel: your server for chosen sites and apps"
+DESCRIPTION = "XmelTunnel"  # Windows shows it as the app name (Task Manager, "not responding")
 URL = "https://github.com/igorxmel/XmelTunnel"
 
 VERSION_INFO = """VSVersionInfo(

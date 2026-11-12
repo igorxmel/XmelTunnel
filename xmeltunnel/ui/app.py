@@ -7,17 +7,18 @@ import sys
 import time
 
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtNetwork import QLocalServer, QLocalSocket
-from PyQt6.QtWidgets import (QApplication, QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea,
+from PyQt6.QtWidgets import (QApplication, QButtonGroup, QComboBox, QSizePolicy, QStackedWidget, QFrame, QGridLayout, QHBoxLayout, QLabel, QMenu, QPushButton, QScrollArea,
                              QSystemTrayIcon, QVBoxLayout, QWidget)
 
-from xmeltunnel import APP_NAME, __version__, core, i18n
+from xmeltunnel import APP_NAME, __version__, core, i18n, profiles, updater
 from xmeltunnel.i18n import tr
 from xmeltunnel.ui import theme
-from xmeltunnel.ui.dialogs import ProfileDialog, SettingsDialog
+from xmeltunnel.ui.dialogs import TARGET_SHORT, TARGET_TITLES, ProfileDialog, SettingsPanel
 from xmeltunnel.ui.frameless import FramelessWindow, confirm
-from xmeltunnel.ui.widgets import KeyValue, Pill, StatusRing, Toggle, app_icon, card, country_name, divider, flag_pixmap
+from xmeltunnel.ui.widgets import (IconButton, KeyValue, Pill, StatusDot, StatusRing, TargetChip, Toggle, app_icon,
+                                   card, country_name, divider, flag_pixmap)
 
 INSTANCE_KEY = "xmeltunnel-single-instance"
 
@@ -34,17 +35,23 @@ def ago(ts: float | None) -> str:
 
 
 def headline(cfg: dict, level: str, problems: list) -> str:
+    """Title of the «Your server» card: the state of the connection to it."""
     keys = {k for k, _ in problems}
-    for key, text in (("setup", "Server is not set up yet"), ("vpn", "VPN is off"),
-                      ("tunnel", "No connection to the server"), ("exit", "Exit is not your server")):
+    if core.has_server(cfg) and not cfg.get("server_enabled", True):
+        return tr("Server is disconnected")
+    if "vpn" in keys:
+        return tr("Waiting for the VPN")
+    if not core.has_server(cfg):
+        return tr("Profiles need your server") if "setup" in keys else tr("Server is not set up")
+    for key, text in (("vpn", "VPN is off"), ("tunnel", "No connection to the server"),
+                      ("exit", "Exit is not your server")):
         if key in keys:
             return tr(text)
-    if any(k.startswith(("leak", "off")) for k in keys):
-        return tr("Something goes around the tunnel")
-    if not core.enabled_profiles(cfg):
-        return tr("No profiles turned on")
-    if level == "ok":
-        return tr("Everything goes through your server")
+    if any(k.startswith("leak") for k in keys):
+        return tr("Something goes around your server")
+    if level in ("ok", "warn") and not any(k in keys for k in ("tunnel", "exit")):
+        return tr("Server is connected") if level == "ok" or not core.pac_profiles(cfg) or \
+            any(k.startswith("off") for k in keys) else tr("Checking the exit…")
     return tr("Checking the exit…")
 
 
@@ -75,44 +82,296 @@ class ProfileRow(QWidget):
         lay.setSpacing(4)
         top = QHBoxLayout()
         top.setSpacing(10)
+        self.chev = QPushButton(objectName="chevron")
+        self.chev.setFixedWidth(16)
+        self.chev.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.chev.clicked.connect(self.toggle_open)
+        self.has_apps = bool(profile["apps"])
+        self.chev.setEnabled(self.has_apps)  # keeps its place, so names line up
+        top.addWidget(self.chev, 0, Qt.AlignmentFlag.AlignTop)
         col = QVBoxLayout()
-        col.setSpacing(1)
+        col.setSpacing(3)
+        name_row = QHBoxLayout()
+        name_row.setSpacing(8)
+        self.chip = TargetChip()
+        name_row.addWidget(self.chip, 0, Qt.AlignmentFlag.AlignVCenter)
         self.name = QLabel(objectName="appName")
-        col.addWidget(self.name)
+        name_row.addWidget(self.name)
+        self.dot = StatusDot()  # red: an app of this profile goes around it; yellow: goes direct, profile is off
+        self.dot.set_level(None)
+        name_row.addWidget(self.dot, 0, Qt.AlignmentFlag.AlignVCenter)
+        name_row.addStretch()
+        col.addLayout(name_row)
         sub = QHBoxLayout()
         sub.setSpacing(10)
         self.count = QLabel(objectName="note")
         sub.addWidget(self.count)
-        edit = QPushButton(tr("Edit…"), objectName="link")
-        edit.setCursor(Qt.CursorShape.PointingHandCursor)
-        edit.clicked.connect(lambda: win.edit_profile(self.pid))
-        sub.addWidget(edit)
         sub.addStretch()
         col.addLayout(sub)
         top.addLayout(col, 1)
+        edit = IconButton("pencil", tr("Edit…"))
+        edit.clicked.connect(lambda: win.edit_profile(self.pid))
+        top.addWidget(edit, 0, Qt.AlignmentFlag.AlignVCenter)
+        top.addSpacing(4)
         self.toggle = Toggle()
         self.toggle.toggled.connect(lambda on: win.engine.set_profile_enabled(self.pid, on))
         top.addWidget(self.toggle, 0, Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(top)
         self.pills = []
+        self.apps_box = QWidget()
+        apps_lay = QVBoxLayout(self.apps_box)
+        apps_lay.setContentsMargins(0, 0, 0, 0)
+        apps_lay.setSpacing(4)
+        lay.addWidget(self.apps_box)
         for app in profile["apps"]:
             r = QHBoxLayout()
-            r.setContentsMargins(12, 0, 0, 0)
+            r.setContentsMargins(38, 0, 0, 0)
             lbl = QLabel(app["name"], objectName="kvKey")
             lbl.setFixedWidth(150)
             pill = Pill("…")
             r.addWidget(lbl)
             r.addWidget(pill, 1)
-            lay.addLayout(r)
+            apps_lay.addLayout(r)
             self.pills.append(pill)
+        self.set_open(profile["id"] in win.engine.cfg.get("expanded_profiles", []))
         self.update_from(profile, {})
 
-    def update_from(self, profile: dict, apps: dict) -> None:
+    def set_open(self, on: bool) -> None:
+        self.apps_box.setVisible(on)
+        self.chev.setText(("▾" if on else "▸") if self.has_apps else "")
+        self.chev.setToolTip(tr("Hide apps") if on else tr("Show apps"))
+
+    def toggle_open(self) -> None:
+        on = not self.apps_box.isVisible()
+        self.set_open(on)
+        with self.win.engine.cfg_lock:
+            ids = [i for i in self.win.engine.cfg.get("expanded_profiles", []) if i != self.pid]
+            self.win.engine.cfg["expanded_profiles"] = ids + ([self.pid] if on else [])
+            self.win.engine.save()
+
+    def update_from(self, profile: dict, apps: dict, problems: list | None = None) -> None:
         self.name.setText(profile["name"])
-        self.count.setText(tr("{n} domains", n=len(profile["domains"])))
+        mine = [(k, t) for k, t in (problems or []) if k.split(":")[1:2] == [self.pid]]
+        if any(k.startswith("leak") for k, _ in mine):
+            self.dot.set_level("down", "\n".join(t for _, t in mine))
+        elif mine:
+            self.dot.set_level("warn", "\n".join(t for _, t in mine))
+        else:
+            self.dot.set_level(None)
+        c = profiles.counts(profile)
+        self.chip.set_target(profile["target"], dict((k, tr(t)) for k, t in TARGET_SHORT)[profile["target"]])
+        parts = []
+        if c["sites"]:
+            parts.append(tr("sites: {n}", n=c["sites"]))
+        if c["apps"]:
+            parts.append(tr("programs: {n}", n=c["apps"]))
+        if c["nets"]:
+            parts.append(tr("subnets: {n}", n=c["nets"]))
+        self.count.setText(" · ".join(parts))
+        needs = profiles.needs_routing(profile) and not self.win.engine.cfg["route_enabled"]
+        self.count.setToolTip(tr("Part of this profile works only while the VPN is connected.") if needs else "")
+        self.count.setObjectName("warnNote" if needs and profile["enabled"] else "note")
+        self.count.style().unpolish(self.count)
+        self.count.style().polish(self.count)
         self.toggle.set_quiet(profile["enabled"])
         for i, pill in enumerate(self.pills):
             pill.set_state(*app_state(apps.get((self.pid, i)), profile["enabled"]))
+
+
+def route_path_text(check) -> tuple[str, str, str | None]:
+    if not check:
+        return "—", "unknown", None
+    ip, loc = check
+    if loc is None:
+        return tr("no answer ({err})", err=ip), "down", None
+    return f"{ip} · {country_name(loc)}", "ok", loc
+
+
+class VpnCard(QFrame):
+    """«VPN»: where it goes (your VPN client or a subscription server) and a Connect button.
+
+    Connected = the whole PC goes by the profiles (sing-box with a virtual adapter, admin rights).
+    Disconnected = only the sites of «through your server» profiles go through your server (PAC, no admin rights).
+    What each path exits as is shown in «Status» (self.paths_box is placed there by the main window)."""
+
+    def __init__(self, win: "MainWindow"):
+        super().__init__(objectName="card")
+        self.win = win
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(18)
+        self.ring = StatusRing("shield", 84)
+        self.ring.clicked.connect(win.engine.check_route)
+        lay.addWidget(self.ring, 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        col.addWidget(QLabel(tr("VPN").upper(), objectName="section"))
+        top = QHBoxLayout()
+        self.title = QLabel(objectName="cardTitle")
+        top.addWidget(self.title, 1)
+        col.addLayout(top)
+        self.sub = QLabel(objectName="note")
+        self.sub.setWordWrap(True)
+        col.addWidget(self.sub)
+        # where the «through the VPN» path goes: a VPN client already running, or a server of a subscription
+        col.addWidget(QLabel(tr("VPN goes through"), objectName="kvKey"))
+        src = QHBoxLayout()
+        src.setSpacing(0)
+        self.seg = {}
+        self.seg_group = QButtonGroup(self)
+        self.seg_group.setExclusive(True)  # clicking the chosen one again keeps it chosen
+        for key, text in (("adapter", tr("Your VPN client")), ("servers", tr("Server from a subscription"))):
+            b = QPushButton(text, objectName="segment")
+            b.setCheckable(True)
+            self.seg_group.addButton(b)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setProperty("pos", "left" if key == "adapter" else "right")
+            b.clicked.connect(lambda _=False, k=key: (win.engine.set_vpn_source(k), win.refresh()))
+            b.setMinimumWidth(b.sizeHint().width() + 8)  # never squeezed into a cut-off label
+            src.addWidget(b, 1)
+            self.seg[key] = b
+        col.addLayout(src)
+        self.picker = QPushButton(objectName="picker")  # looks like a drop-down: the chosen server
+        self.picker.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.picker.clicked.connect(self.open_servers)
+        col.addWidget(self.picker)
+        self.server_line = QLabel(objectName="note")
+        col.addWidget(self.server_line)
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+        self.b_connect = QPushButton(objectName="primary")
+        self.b_connect.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.b_connect.setMinimumWidth(150)
+        self.b_connect.clicked.connect(lambda: win.engine.set_route_enabled(not win.engine.cfg["route_enabled"]))
+        btns.addWidget(self.b_connect)
+        self.b_retry_route = QPushButton(tr("Retry"), objectName="small")
+        self.b_retry_route.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.b_retry_route.clicked.connect(win.engine.retry_route)
+        btns.addWidget(self.b_retry_route)
+        btns.addStretch()
+        col.addLayout(btns)
+        lay.addLayout(col, 1)
+
+        # what each path exits as: shown in the «Status» card
+        self.paths_box = QWidget()
+        pl = QVBoxLayout(self.paths_box)
+        pl.setContentsMargins(0, 0, 0, 0)
+        pl.setSpacing(6)
+        head = QHBoxLayout()
+        head.addWidget(QLabel(tr("Paths").upper(), objectName="section"), 1)
+        self.b_check_route = QPushButton(tr("Check"), objectName="small")
+        self.b_check_route.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.b_check_route.clicked.connect(win.engine.check_route)
+        head.addWidget(self.b_check_route)
+        pl.addLayout(head)
+        self.pills = {}
+        for key in ("direct", "vpn", "server"):
+            r = QHBoxLayout()
+            r.setSpacing(8)
+            chip = TargetChip(key, dict((k, tr(t)) for k, t in TARGET_SHORT)[key])
+            chip.setFixedWidth(110)
+            r.addWidget(chip)
+            p = Pill("—")
+            r.addWidget(p, 1)
+            pl.addLayout(r)
+            self.pills[key] = p
+        self.paths_note = QLabel(tr("Shown while the VPN is connected."), objectName="note")
+        pl.addWidget(self.paths_note)
+
+    def open_servers(self) -> None:
+        from xmeltunnel.ui.servers_dialog import ServersDialog
+
+        ServersDialog(self.win, self.win.engine).exec()
+        self.win.refresh()
+
+    def picker_state(self, cfg: dict) -> tuple[str, str]:
+        """(text, country code for the flag) of the server picker."""
+        from xmeltunnel.servers import display_name
+
+        pick = cfg.get("vpn_server") or "auto"
+        all_servers = list(cfg.get("servers") or [])
+        if not all_servers:
+            return tr("Add a subscription or server links…"), ""
+        if pick.startswith("auto"):
+            from xmeltunnel.routing import chosen_servers
+
+            checks = cfg.get("server_checks") or {}
+            ranked = sorted((checks[s["id"]]["ms"], s) for s in chosen_servers(cfg)
+                            if (checks.get(s["id"]) or {}).get("ms"))
+            where = tr("the fastest in {country}", country=country_name(pick[5:])) if ":" in pick \
+                else tr("the fastest of {n}", n=len(all_servers))
+            if not ranked:
+                return tr("Automatically: {where}", where=where) + " · " + tr("ping not checked yet"), pick[5:]
+            ms, best = ranked[0]
+            return (tr("Automatically: {where}", where=where) + f" — {display_name(best['name'])} · {ms} " + tr("ms"),
+                    best.get("country") or checks[best["id"]].get("exit_loc", ""))
+        s = next((x for x in all_servers if x["id"] == pick), None)
+        if not s:
+            return tr("Choose a server…"), ""
+        chk = (cfg.get("server_checks") or {}).get(pick) or {}
+        ms = f"  ·  {chk['ms']} " + tr("ms") if chk.get("ms") else ""
+        return display_name(s["name"]) + ms, s.get("country") or chk.get("exit_loc", "")
+
+    def update_from(self, cfg: dict, r: dict) -> None:
+        source = cfg.get("vpn_source", "adapter")
+        for key, b in self.seg.items():
+            b.setChecked(key == source)
+        builtin = source == "servers"
+        self.picker.setVisible(builtin)
+        if builtin:
+            text, cc = self.picker_state(cfg)
+            self.picker.setText(text + "   ▾")
+            self.picker.setIcon(QIcon(flag_pixmap(cc, 18, 13)) if cc else QIcon())
+            self.server_line.setText("")
+        else:
+            self.server_line.setText(tr("Adapter: {name}", name=r["vpn"]) if r.get("vpn") else
+                                     tr("No VPN client adapter found — turn your VPN client on."))
+        self.server_line.setVisible(not builtin)
+        status = r["status"]
+        checks = r["checks"]
+        failed = [k for k, v in checks.items() if v and v[1] is None]
+        if status == "running":
+            level = "ok" if checks and not failed else ("down" if checks and len(failed) == len(checks) else "warn")
+            title = tr("VPN is connected") if not failed else tr("Connected, but not every path answers")
+            where = {"direct": tr("direct"), "vpn": tr("through the VPN"),
+                     "server": tr("through your server")}[cfg.get("route_default", "direct")]
+            text = tr("Profiles decide, everything else goes {where}.", where=where)
+        elif status in ("downloading", "starting", "restarting"):
+            level, title = "unknown", tr("Connecting…")
+            text = {"downloading": tr("Downloading sing-box… {pct}%", pct=r["progress"]),
+                    "restarting": tr("Restarting with the new settings…"),
+                    "starting": tr("Starting… confirm the admin rights request")}[status]
+        elif status == "error":
+            level, title, text = "down", tr("The VPN did not connect"), r["error"]
+        else:
+            level, title = "unknown", tr("VPN is disconnected")
+            text = (r["error"] + " " if r["error"] else "") + tr(
+                "Connect to route the whole PC by the profiles. While disconnected, only the sites of «through your "
+                "server» profiles go through your server.")
+        busy = status in ("downloading", "starting", "restarting") or (status == "running" and r["checking"])
+        self.ring.set_level(level, busy=busy)
+        self.title.setText(title)
+        self.sub.setText(text)
+        self.sub.setObjectName("error" if status == "error" else "note")
+        self.sub.style().unpolish(self.sub)
+        self.sub.style().polish(self.sub)
+        self.b_connect.setText(tr("Disconnect") if cfg["route_enabled"] else tr("Connect"))
+        self.b_connect.setObjectName("" if cfg["route_enabled"] else "primary")
+        self.b_connect.style().unpolish(self.b_connect)
+        self.b_connect.style().polish(self.b_connect)
+        self.b_retry_route.setVisible(cfg["route_enabled"] and status in ("error", "off"))
+        self.b_check_route.setVisible(status == "running")
+        self.paths_note.setVisible(status != "running")
+        for key, pill in self.pills.items():
+            if status != "running":
+                pill.set_state("—", "unknown")
+            elif r["checking"] and key not in checks:
+                pill.set_state(tr("checking…"), "warn")
+            elif key == "server" and not cfg.get("ss_key") and not core.link_server(cfg):
+                pill.set_state(tr("not installed"), "unknown")
+            else:
+                text, lvl, flag = route_path_text(checks.get(key))
+                pill.set_state(text, lvl, flag)
 
 
 class MainWindow(FramelessWindow):
@@ -121,15 +380,42 @@ class MainWindow(FramelessWindow):
         self.engine = engine
         self.quitting = False
         self.rows: dict[str, ProfileRow] = {}
+        self.on_update_ready = None  # set by main(): install and quit
+        self.tray = None
         self._profile_sig = None
-        self.titlebar.maximize.hide()
-        self.resize(900, 680)
-        self.setMinimumSize(780, 600)
+        self.setMinimumSize(1160, 760)  # the left menu takes ~200 px; the two cards on top need the rest
+        w = engine.cfg.get("window") or []
+        self.resize(*(w[:2] if len(w) >= 2 and w[0] >= 1160 else (1260, 840)))
+        self._start_maximized = len(w) >= 3 and bool(w[2])
+
+        # a left menu with pages, like ZapretXmel
+        root = QHBoxLayout(self.body)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        side = QFrame(objectName="Sidebar")
+        side.setFixedWidth(196)
+        sl_ = QVBoxLayout(side)
+        sl_.setContentsMargins(10, 16, 10, 14)
+        sl_.setSpacing(4)
+        self.stack = QStackedWidget()
+        self.nav: dict[str, QPushButton] = {}
+        self.nav_group = QButtonGroup(self)
+        for key, title in (("overview", tr("Overview")), ("settings", tr("Settings")), ("log", tr("Log")),
+                           ("updates", tr("Updates"))):
+            b = QPushButton(title, objectName="navItem")
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, k=key: self.select(k))
+            self.nav_group.addButton(b)
+            sl_.addWidget(b)
+            self.nav[key] = b
+        sl_.addStretch()  # the version is in the title bar, the update state on the «Updates» page
+        root.addWidget(side)
+        root.addWidget(self.stack, 1)
 
         page = QWidget(objectName="page")
-        root = QVBoxLayout(self.body)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(page)
+        self.pages = {"overview": page}
+        self.stack.addWidget(page)
         lay = QVBoxLayout(page)
         lay.setContentsMargins(24, 20, 24, 16)
         lay.setSpacing(14)
@@ -137,22 +423,26 @@ class MainWindow(FramelessWindow):
         head = QVBoxLayout()
         head.setSpacing(2)
         head.addWidget(QLabel(tr("Overview"), objectName="title"))
-        head.addWidget(QLabel(tr("Chosen sites and apps go through your server, everything else stays as is"),
+        head.addWidget(QLabel(tr("Profiles decide what goes through your server, the VPN or direct"),
                               objectName="subtitle"))
         lay.addLayout(head)
 
-        # hero
-        hero, hl = card()
-        hl.setContentsMargins(22, 16, 22, 16)
-        row = QHBoxLayout()
-        row.setSpacing(22)
-        self.ring = StatusRing()
+        self.route = VpnCard(self)  # created first: its paths go into the «Status» card below
+        # two hero cards: your server and the VPN
+        heroes = QHBoxLayout()
+        heroes.setSpacing(14)
+        hero = QFrame(objectName="card")
+        hl = QHBoxLayout(hero)
+        hl.setContentsMargins(20, 16, 20, 16)
+        hl.setSpacing(18)
+        self.ring = StatusRing("server", 84)
         self.ring.clicked.connect(self.engine.check_now)
-        row.addWidget(self.ring)
+        hl.addWidget(self.ring, 0, Qt.AlignmentFlag.AlignTop)
         info = QVBoxLayout()
         info.setSpacing(6)
-        info.addStretch()
-        self.h_title = QLabel(objectName="heroTitle")
+        self.h_caption = QLabel(tr("Your server").upper(), objectName="section")
+        info.addWidget(self.h_caption)
+        self.h_title = QLabel(objectName="cardTitle")
         info.addWidget(self.h_title)
         line = QHBoxLayout()
         line.setSpacing(8)
@@ -163,25 +453,32 @@ class MainWindow(FramelessWindow):
         line.addStretch()
         info.addLayout(line)
         self.h_sub = QLabel(objectName="muted")
+        self.h_sub.setWordWrap(True)
         info.addWidget(self.h_sub)
         info.addStretch()
-        row.addLayout(info, 1)
-        btns = QVBoxLayout()
+        btns = QHBoxLayout()
         btns.setSpacing(8)
-        btns.addStretch()
-        self.b_main = QPushButton(objectName="primary")
+        self.b_main = QPushButton(objectName="small")
         self.b_main.setCursor(Qt.CursorShape.PointingHandCursor)
         self.b_main.clicked.connect(self.main_action)
-        self.b_re = QPushButton(tr("Reconnect"))
+        self.b_main.setToolTip(tr("Checks right now that sites go out through your server: asks Cloudflare which "
+                                  "IP and country it sees, and how long that takes."))
+        self.b_re = QPushButton(objectName="small")
         self.b_re.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.b_re.clicked.connect(self.engine.reconnect)
-        for b in (self.b_main, self.b_re):
-            b.setFixedWidth(180)
+        self.b_re.clicked.connect(lambda: self.engine.set_server_enabled(not self.engine.cfg.get("server_enabled", True)))
+        self.b_friends = QPushButton(tr("Share…"), objectName="small")
+        self.b_friends.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.b_friends.setToolTip(tr("Share your server: personal links, traffic, limits"))
+        self.b_friends.clicked.connect(self.open_sharing)
+        for b in (self.b_main, self.b_re, self.b_friends):
+            b.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)  # never cut: the card grows
             btns.addWidget(b)
         btns.addStretch()
-        row.addLayout(btns)
-        hl.addLayout(row)
-        lay.addWidget(hero)
+        info.addLayout(btns)
+        hl.addLayout(info, 1)
+        heroes.addWidget(hero, 1)
+        heroes.addWidget(self.route, 1)
+        lay.addLayout(heroes)
 
         # problems banner
         self.banner, bl = card()
@@ -199,14 +496,10 @@ class MainWindow(FramelessWindow):
                                                    ("proxy", "Proxy on server"), ("pac", "PAC file"))}
         for w in self.kv.values():
             sl.addWidget(w)
-        sl.addStretch()
+        sl.addSpacing(6)
         sl.addWidget(divider())
-        r = QHBoxLayout()
-        r.addWidget(QLabel(tr("Start with Windows")), 1)
-        self.t_auto = Toggle()
-        self.t_auto.toggled.connect(self.engine.set_autostart)
-        r.addWidget(self.t_auto)
-        sl.addLayout(r)
+        sl.addWidget(self.route.paths_box)
+        sl.addStretch()
         grid.addWidget(st, 0, 0)
 
         pc = QFrame(objectName="card")
@@ -215,12 +508,29 @@ class MainWindow(FramelessWindow):
         pl.setSpacing(8)
         ph = QHBoxLayout()
         ph.addWidget(QLabel(tr("Profiles").upper(), objectName="section"), 1)
-        add = QPushButton(tr("Add profile…"), objectName="link")
+        add = QPushButton(tr("Add profile…"), objectName="small")
         add.setCursor(Qt.CursorShape.PointingHandCursor)
         add.clicked.connect(lambda: self.edit_profile(None))
         ph.addWidget(add)
         ph.addSpacing(8)
         pl.addLayout(ph)
+        rest = QHBoxLayout()
+        rest.setSpacing(8)
+        rest.addWidget(QLabel(tr("Everything not in a profile"), objectName="kvKey"))
+        rest.addWidget(QLabel("→", objectName="kvKey"))
+        self.default = QComboBox()
+        for key, title in TARGET_TITLES:
+            self.default.addItem(tr(title), key)
+        self.default.setCurrentIndex(max(0, self.default.findData(engine.cfg.get("route_default", "direct"))))
+        self.default.currentIndexChanged.connect(lambda: engine.set_route_default(self.default.currentData()))
+        rest.addWidget(self.default)
+        rest.addStretch()
+        rest.addSpacing(8)
+        pl.addLayout(rest)
+        self.rest_note = QLabel(tr("Works while the VPN is connected; otherwise the rest goes as Windows decides."), objectName="note")
+        self.rest_note.setWordWrap(True)
+        pl.addWidget(self.rest_note)
+        pl.addWidget(divider())
         self.list_box = QVBoxLayout()
         self.list_box.setSpacing(10)
         inner = QWidget()
@@ -238,42 +548,119 @@ class MainWindow(FramelessWindow):
         self.p_note.setWordWrap(True)
         pl.addWidget(self.p_note)
         grid.addWidget(pc, 0, 1)
-        grid.setColumnStretch(0, 1)
-        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(0, 2)
+        grid.setColumnStretch(1, 3)
         lay.addLayout(grid, 1)
 
-        foot = QHBoxLayout()
-        for text, fn in ((tr("Settings…"), self.open_settings), (tr("Log"), self.open_log)):
-            b = QPushButton(text, objectName="link")
-            b.setCursor(Qt.CursorShape.PointingHandCursor)
-            b.clicked.connect(fn)
-            foot.addWidget(b)
-            foot.addSpacing(14)
-        foot.addStretch()
-        self.f_server = QLabel(objectName="muted")
-        foot.addWidget(self.f_server)
-        lay.addLayout(foot)
+        from xmeltunnel.ui.pages import LogPage, UpdatesPage
+
+        self.settings_host = QWidget(objectName="page")
+        shl = QVBoxLayout(self.settings_host)
+        shl.setContentsMargins(24, 20, 24, 16)
+        shl.setSpacing(12)
+        shl.addWidget(QLabel(tr("Settings"), objectName="title"))
+        self.settings_slot = QVBoxLayout()
+        shl.addLayout(self.settings_slot, 1)
+        self.settings_panel = None
+        self.log_page = LogPage()
+        self.updates_page = UpdatesPage(self)
+        for key, w in (("settings", self.settings_host), ("log", self.log_page), ("updates", self.updates_page)):
+            self.pages[key] = w
+            self.stack.addWidget(w)
+        self.select("overview")
         self.refresh()
+
+    def select(self, key: str) -> None:
+        if key == "settings":
+            self.build_settings()
+        elif key == "log":
+            self.log_page.load()
+        self.nav[key].setChecked(True)
+        self.stack.setCurrentWidget(self.pages[key])
+        self.refresh()
+
+    def build_settings(self) -> None:
+        """A fresh settings panel with the current values (also after «Undo changes»)."""
+        if self.settings_panel is not None:
+            self.settings_slot.removeWidget(self.settings_panel)
+            self.settings_panel.deleteLater()
+        self._before = {k: self.engine.cfg[k] for k in ("language", "theme", "ui_scale")}
+        self.settings_panel = SettingsPanel(self.engine)
+        self.settings_panel.saved.connect(self.on_settings_saved)
+        self.settings_panel.reset_requested.connect(self.build_settings)
+        self.settings_panel.remove_requested.connect(self.remove_from_pc)
+        self.settings_slot.addWidget(self.settings_panel)
 
     # --- actions ---
 
     def main_action(self) -> None:
-        if not self.engine.cfg["server"]:
+        if not core.has_server(self.engine.cfg):
             self.open_settings()
         else:
             self.engine.check_now()
 
-    def open_settings(self) -> None:
-        lang = self.engine.cfg["language"]
-        dlg = SettingsDialog(self, self.engine)
+    def open_sharing(self) -> None:
+        from xmeltunnel.ui.sharing_dialog import SharingDialog
+
+        SharingDialog(self, self.engine).exec()
+        self.refresh()
+
+    def welcome(self) -> None:
+        from xmeltunnel.ui.dialogs import WelcomeDialog
+        dlg = WelcomeDialog(self)
         dlg.exec()
-        if dlg.removed:
-            return self.remove_from_pc()
-        if self.engine.cfg["language"] != lang:
+        if dlg.choice == "server":
+            self.open_settings()
+        elif dlg.choice == "routing":
+            self.edit_profile(None)
+        elif dlg.choice == "subscription":
+            self.engine.set_vpn_source("servers")
+            self.route.open_servers()
+        self.refresh()
+
+    def update_action(self) -> None:
+        u = self.engine.snapshot()[0]["update"]
+        if u["status"] in ("downloading", "ready", "checking"):
+            return
+        if not u["version"]:
+            return self.engine.check_updates_now()
+        extra = tr("Connecting the VPN will ask for admin rights again after the restart.") \
+            if self.engine.cfg["route_enabled"] else ""
+        if confirm(self, tr("Update"), tr("Update XmelTunnel to {v}? It downloads from GitHub, checks the "
+                                          "checksum and restarts.", v=u["version"]) + ("\n\n" + extra if extra else ""),
+                   yes=tr("Update")):
+            self.engine.download_update()
+
+    def update_text(self, u: dict) -> tuple[str, bool]:
+        """Footer link text and whether it is visible."""
+        if u["kind"] == "source":
+            return "", False
+        st = u["status"]
+        if st == "downloading":
+            return tr("Downloading the update… {pct}%", pct=u["progress"]), True
+        if st == "ready":
+            return tr("Installing the update…"), True
+        if u["version"]:
+            return tr("Update to {v}", v=u["version"]), True
+        if st == "checking":
+            return tr("Checking for updates…"), True
+        return tr("Check for updates"), True
+
+    def open_settings(self) -> None:
+        self.select("settings")
+
+    def on_settings_saved(self) -> None:
+        before = getattr(self, "_before", {})
+        cfg = self.engine.cfg
+        self._before = {k: cfg[k] for k in ("language", "theme", "ui_scale")}
+        if cfg["theme"] != before.get("theme"):
+            apply_theme(cfg)
+            for w in QApplication.topLevelWidgets():
+                w.update()
+        if cfg["language"] != before.get("language") or cfg["ui_scale"] != before.get("ui_scale"):
             from xmeltunnel.ui.frameless import info
-            i18n.set_language(self.engine.cfg["language"])
-            info(self, APP_NAME, "Restart XmelTunnel to switch the language.\n\n"
-                                 "Перезапусти XmelTunnel, чтобы сменить язык.")
+            info(self, APP_NAME, "Restart XmelTunnel to apply the language and scale.\n\n"
+                                 "Перезапустите XmelTunnel, чтобы применились язык и масштаб.")
         self.refresh()
 
     def remove_from_pc(self) -> None:
@@ -292,9 +679,7 @@ class MainWindow(FramelessWindow):
         self.refresh()
 
     def open_log(self) -> None:
-        if not os.path.exists(core.log_path()):
-            core.log("log created")
-        os.startfile(core.log_path())  # noqa: S606
+        self.select("log")
 
     # --- refresh ---
 
@@ -319,7 +704,8 @@ class MainWindow(FramelessWindow):
             self.rebuild_profiles()
         s, level, problems = self.engine.snapshot()
 
-        self.ring.set_level(level, busy=s["checking"] or (s["tunnel"] and s["exit_ok"] is None))
+        self.ring.set_level(level if core.has_server(cfg) else "unknown",
+                            busy=s["checking"] or (s["tunnel"] and s["exit_ok"] is None))
         self.h_title.setText(headline(cfg, level, problems))
         if s["exit_ok"]:
             self.h_flag.setPixmap(flag_pixmap(s["exit_loc"]))
@@ -335,11 +721,25 @@ class MainWindow(FramelessWindow):
             sub.append(tr("checking…"))
         elif s["exit_at"]:
             sub.append(tr("checked {ago}", ago=ago(s["exit_at"])))
-        self.h_sub.setText("  ·  ".join(sub) or ("" if not cfg["server"] else tr("tunnel is down")))
-        setup = not cfg["server"]
-        self.b_main.setText(tr("Set up the server") if setup else tr("Check exit"))
+        setup = not core.has_server(cfg)
+        enabled = cfg.get("server_enabled", True)
+        link = cfg.get("server_mode") == "link"
+        if setup:
+            idle = tr("Sites of «through your server» profiles go through it. The VPN works without it.")
+        elif not enabled:
+            idle = tr("Sites of «through your server» profiles go direct until you connect it again.")
+        else:
+            idle = tr("tunnel is down")
+        self.h_sub.setText("  ·  ".join(sub) or idle)
+        self.rest_note.setVisible(not cfg["route_enabled"])
+        self.b_main.setText(tr("Set up the server") if setup else tr("Check the connection"))
+        self.b_main.setVisible(setup or enabled)
         self.b_main.setEnabled(setup or (s["tunnel"] and not s["checking"]))
         self.b_re.setVisible(not setup)
+        self.b_re.setText(tr("Disconnect") if enabled else tr("Connect"))
+        self.b_friends.setVisible(not setup and not link)  # sharing needs SSH to your own server
+        self.kv["tunnel"].key_label.setText(tr("Link proxy") if link else tr("SSH tunnel"))
+        self.kv["proxy"].setVisible(not link)
 
         self.banner.setVisible(bool(problems) and not setup)
         soft = all(k.startswith("off") for k, _ in problems)
@@ -366,7 +766,7 @@ class MainWindow(FramelessWindow):
             self.kv["proxy"].set(tr("answers on :{port}", port=cfg["remote_proxy_port"]), "ok")
         else:
             self.kv["proxy"].set(tr("error: {err}", err=s["exit_ip"]), "down")
-        if not core.enabled_profiles(cfg):
+        if not core.pac_profiles(cfg):
             self.kv["pac"].set(tr("no profiles on"), "unknown")
         elif not s["pac"]:
             self.kv["pac"].set(tr("off in Windows"), "warn")
@@ -374,30 +774,51 @@ class MainWindow(FramelessWindow):
             up = core.port_open(cfg["pac_port"])
             self.kv["pac"].set(tr("served on :{port}", port=cfg["pac_port"]) if up else tr("port does not answer"),
                                "ok" if up else "down")
-        self.t_auto.set_quiet(s["autostart"])
+        self.route.update_from(cfg, s["route"])
 
         for p in cfg["profiles"]:
             if p["id"] in self.rows:
-                self.rows[p["id"]].update_from(p, s["apps"])
-        note = tr("Turn a profile on to send its sites through your server.")
+                self.rows[p["id"]].update_from(p, s["apps"], problems)
+        note = tr("A profile that is on sends its sites and programs where it says.")
         if any(a["method"] == "claude_code" for p in cfg["profiles"] for a in p["apps"]):
             note += " " + tr("Claude Code picks the change up in new sessions.")
         self.p_note.setText(note)
-        self.f_server.setText(f"{cfg['server'] or '—'}  ·  127.0.0.1:{cfg['local_proxy_port']}  ·  v{__version__}")
+        u = s["update"]
+        self.updates_page.update_from(u)
+        self.nav["updates"].setText(tr("Updates") + ("  •" if u["version"] else ""))
+        if u["status"] == "ready" and self.on_update_ready:
+            cb, self.on_update_ready = self.on_update_ready, None
+            cb()
+
 
     # --- window ---
 
     def show_window(self) -> None:
-        self.showNormal()
+        if self.isMaximized() or (not self.isVisible() and self._start_maximized):
+            self.showMaximized()
+        else:
+            self.showNormal()
+        self._start_maximized = False
         self.raise_()
         self.activateWindow()
 
-    def closeEvent(self, e):  # noqa: N802 — the close box hides to tray
+    def remember_geometry(self) -> None:
+        maxed = self.isMaximized()
+        size = self.normalGeometry().size() if maxed else self.size()
+        with self.engine.cfg_lock:
+            self.engine.cfg["window"] = [size.width(), size.height(), maxed]
+            self.engine.save()
+
+    def closeEvent(self, e):  # noqa: N802 — the close box hides to tray (or quits, per settings)
+        self.remember_geometry()
         if self.quitting:
             e.accept()
             return
         e.ignore()
-        self.hide()
+        if self.engine.cfg.get("close_to_tray", True):
+            self.hide()
+        elif self.tray is not None:
+            self.tray.quit()
 
 
 class Tray:
@@ -433,7 +854,14 @@ class Tray:
             a.setChecked(p["enabled"])
             a.triggered.connect(lambda on, pid=p["id"]: self.engine.set_profile_enabled(pid, on))
             m.addAction(a)
+        a = QAction(tr("VPN connected"), m, checkable=True)
+        a.setChecked(self.engine.cfg["route_enabled"])
+        a.triggered.connect(self.engine.set_route_enabled)
+        m.addAction(a)
         m.addSeparator()
+        if s["update"]["version"]:
+            m.addAction(QAction(tr("Update to {v}", v=s["update"]["version"]), m,
+                                triggered=lambda: (self.win.show_window(), self.win.update_action())))
         m.addAction(QAction(tr("Check exit"), m, triggered=self.engine.check_now))
         m.addAction(QAction(tr("Reconnect"), m, triggered=self.engine.reconnect))
         m.addSeparator()
@@ -453,18 +881,54 @@ class Tray:
             tip += f"\n{s['exit_ip']} · {country_name(s['exit_loc'])} · {s['exit_ms']} " + tr("ms")
         self.icon.setToolTip(tip[:120])
         for title, text in self.engine.take_notes():
+            if not self.engine.cfg.get("notifications", True):
+                continue
             self.icon.showMessage(title, text, QSystemTrayIcon.MessageIcon.Warning, 10000)
 
-    def quit(self) -> None:
-        s, _, _ = self.engine.snapshot()
-        if s["pac"] and not confirm(self.win if self.win.isVisible() else None, tr("Quit"),
-                                    tr("While XmelTunnel is closed, nobody serves the PAC file and Windows sends apps "
-                                       "directly, around your server.\n\nQuit anyway?"), yes=tr("Quit")):
+    def quit_for_update(self) -> None:
+        args = [] if self.win.isVisible() else ["--hidden"]
+        try:
+            self.engine.install_update(args)
+        except Exception as e:  # noqa: BLE001
+            core.log(f"update install failed: {e!r}")
+            self.engine._update_set(status="error", error=tr("Could not install the update: {err}", err=str(e)))
             return
         self.engine.stop()
         self.win.quitting = True
         self.icon.hide()
         self.app.quit()
+
+    def quit(self) -> None:
+        s, _, _ = self.engine.snapshot()
+        if s["route"]["status"] == "running" and not s["pac"] and not confirm(
+                self.win if self.win.isVisible() else None, tr("Quit"),
+                tr("The VPN disconnects together with XmelTunnel.\n\nQuit anyway?"), yes=tr("Quit")):
+            return
+        if s["pac"] and not confirm(self.win if self.win.isVisible() else None, tr("Quit"),
+                                    tr("While XmelTunnel is closed, nobody serves the PAC file and Windows sends apps "
+                                       "directly, around your server.\n\nQuit anyway?"), yes=tr("Quit")):
+            return
+        self.win.remember_geometry()
+        self.engine.stop()
+        self.win.quitting = True
+        self.icon.hide()
+        self.app.quit()
+
+
+def apply_theme(cfg: dict) -> None:
+    t = cfg.get("theme", "system")
+    theme.apply(theme.system_is_light() if t == "system" else t == "light")
+    QApplication.instance().setStyleSheet(theme.stylesheet())
+
+
+def apply_ui_scale() -> None:
+    """Interface scale on top of Windows'. Qt reads it once, before QApplication exists."""
+    try:
+        scale = float(core.load_config().get("ui_scale") or 0)
+    except (TypeError, ValueError):
+        scale = 0
+    if 0.5 <= scale <= 3 and "QT_SCALE_FACTOR" not in os.environ:
+        os.environ["QT_SCALE_FACTOR"] = str(scale)
 
 
 _mutex = None
@@ -481,11 +945,29 @@ def hold_app_mutex() -> None:
         pass
 
 
+def install_excepthook() -> None:
+    """PyQt6 aborts the whole program on an exception that escapes a slot, unless sys.excepthook is ours.
+    Log it and keep running: one broken click must not take the tunnel and the routing mode down."""
+    import traceback
+
+    def hook(kind, value, tb):
+        core.log("unexpected error:\n" + "".join(traceback.format_exception(kind, value, tb)))
+
+    sys.excepthook = hook
+
+
 def main() -> int:
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    if "--uninstall" not in sys.argv:
+        apply_ui_scale()
     app = QApplication(sys.argv)
+    install_excepthook()
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
+
+    if updater.RESTART_FLAG in sys.argv:  # started by an update: let the old instance finish quitting
+        updater.wait_for_previous()
+    updater.cleanup()
 
     if "--uninstall" in sys.argv:  # uninstaller and scripts: same as Settings -> Remove from this PC
         # Runs hidden from the uninstaller: never show dialogs, never touch stdout (a windowed exe has none).
@@ -514,21 +996,24 @@ def main() -> int:
     cfg = core.load_config()
     i18n.set_language(cfg["language"])
     engine = core.Engine(cfg)
-    theme.apply(theme.system_is_light())
-    app.setStyleSheet(theme.stylesheet())
+    apply_theme(cfg)
     app.setWindowIcon(app_icon())
 
     engine.start()
     win = MainWindow(engine)
     tray = Tray(app, engine, win)
+    win.on_update_ready = tray.quit_for_update
+    win.tray = tray
     server.newConnection.connect(lambda: (server.nextPendingConnection(), win.show_window()))
 
     timer = QTimer(interval=1000)
-    timer.timeout.connect(lambda: (tray.update(), win.isVisible() and win.refresh()))
+    timer.timeout.connect(lambda: (tray.update(), win.refresh() if win.isVisible() or
+                                   engine.state["update"]["status"] == "ready" else None))
     timer.start()
     tray.update()
-    if "--hidden" not in sys.argv or not engine.cfg["server"]:
-        win.show()
-    if not engine.cfg["server"]:
-        QTimer.singleShot(400, win.open_settings)
+    hidden = "--hidden" in sys.argv or (engine.cfg["start_minimized"] and updater.RESTART_FLAG not in sys.argv)
+    if not hidden or engine.cfg.get("_first_run"):
+        win.show_window()
+    if engine.cfg.get("_first_run"):
+        QTimer.singleShot(400, win.welcome)
     return app.exec()

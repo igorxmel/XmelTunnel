@@ -3,7 +3,7 @@ from collections import namedtuple
 
 import pytest
 
-from xmeltunnel import core, i18n, profiles
+from xmeltunnel import core, i18n, profiles, routing
 
 Addr = namedtuple("Addr", "ip port")
 Conn = namedtuple("Conn", "pid raddr status")
@@ -48,7 +48,9 @@ def test_parse_domains():
 def test_presets_are_valid():
     for p in profiles.PRESETS:
         n = profiles.normalize(p)
-        assert len(n["domains"]) == len(p["domains"]), p["id"]
+        expected = p.get("entries", p["domains"])
+        assert routing.parse_list(expected)["bad"] == [], p["id"]
+        assert len(n["domains"]) == len(routing.parse_list(expected)["domains"]), p["id"]
         assert len(n["apps"]) == len(p["apps"]), p["id"]
 
 
@@ -84,15 +86,24 @@ def test_pac_only_enabled_profiles_and_no_direct_fallback():
 def test_config_roundtrip(tmp_path):
     path = str(tmp_path / "c.json")
     c = cfg()
-    c["profiles"][0]["domains"].append("extra.com")
+    c["profiles"][0]["entries"].append("extra.com")
     core.save_config(c, path)
     loaded = core.load_config(path)
     assert loaded["server"] == "root@1.2.3.4" and "extra.com" in loaded["profiles"][0]["domains"]
 
 
-def test_first_run_has_claude_preset_off(tmp_path):
+def test_first_run_starts_empty(tmp_path):
     c = core.load_config(str(tmp_path / "missing.json"))
-    assert c["profiles"][0]["id"] == "claude" and not c["profiles"][0]["enabled"]
+    assert c["profiles"] == [] and c["_first_run"] is True
+    core.save_config(c, str(tmp_path / "c.json"))
+    again = core.load_config(str(tmp_path / "c.json"))
+    assert again["_first_run"] is False and "_first_run" not in open(tmp_path / "c.json").read()
+
+
+def test_no_server_is_fine_without_profiles():
+    assert core.evaluate(cfg(server="", profiles=[]), state()) == (core.OFF, [])
+    level, problems = core.evaluate(cfg(server=""), state())
+    assert level == core.WARN and problems[0][0] == "setup"
 
 
 def test_validate():
@@ -166,7 +177,16 @@ def test_evaluate_leak_vs_profile_off():
     assert level == core.DOWN and p[0][0] == "leak:claude:0"
     off = cfg(profiles=[dict(profiles.preset("claude"), enabled=False)])
     level, p = core.evaluate(off, state(apps=apps(direct=3)))
-    assert level == core.WARN and p[0][0] == "off:claude:0"
+    # the ring is about the connection: a profile switched off on purpose is no reason to turn yellow
+    assert level == core.OK and p[0][0] == "off:claude:0"
+
+
+def test_evaluate_waiting_for_vpn_and_switched_off():
+    level, p = core.evaluate(cfg(require_vpn=True), state(tunnel=False, vpn=None, exit_ok=None))
+    assert level == core.WARN and p[0][0] == "vpn"            # waits for the VPN: yellow, not red
+    level, p = core.evaluate(cfg(), state(tunnel=False, exit_ok=None))
+    assert level == core.DOWN and p[0][0] == "tunnel"
+    assert core.evaluate(cfg(server_enabled=False), state(tunnel=False)) == (core.OFF, [])
 
 
 def test_evaluate_wrong_exit():
@@ -196,11 +216,11 @@ def test_pac_restored_after_vpn_client_reset(monkeypatch):
     c = cfg()
     fake = SimpleNamespace(cfg=c, cfg_lock=threading.RLock(), save=lambda: None)
     assert core.Engine._restore_pac(fake) is True          # wiped by a VPN client -> back
-    assert reg["AutoConfigURL"] == core.pac_url(c)
+    assert core.is_our_pac(reg["AutoConfigURL"], c)
     reg["AutoConfigURL"] = "http://corp/proxy.pac"           # someone else's PAC
     fake._pac_restored_at = 0
     core.Engine._restore_pac(fake)
-    assert reg["AutoConfigURL"] == core.pac_url(c) and c["prev_autoconfig"] == "http://corp/proxy.pac"
+    assert core.is_our_pac(reg["AutoConfigURL"], c) and c["prev_autoconfig"] == "http://corp/proxy.pac"
     assert core.Engine._restore_pac(fake) is False           # rate-limited
 
 
@@ -231,3 +251,38 @@ def test_remove_from_pc_leaves_foreign_pac(monkeypatch, tmp_path):
     monkeypatch.setattr(core, "_reg_set", lambda path, name, v: reg.update({name: v}))
     core.remove_from_pc(cfg(), str(tmp_path / "none.json"), str(tmp_path / "d"))
     assert reg["AutoConfigURL"] == "http://corp/proxy.pac"
+
+
+def test_fresh_pac_mark(monkeypatch):
+    c = cfg()
+    reg = {"AutoConfigURL": "http://corp/proxy.pac"}
+    monkeypatch.setattr(core, "_reg_get", lambda path, name: reg.get(name))
+    monkeypatch.setattr(core, "_reg_set", lambda path, name, v: reg.pop(name, None) if v is None else reg.update({name: v}))
+    core.install_pac(c, True)
+    first = reg["AutoConfigURL"]
+    assert core.is_our_pac(first, c) and "?v=" in first and c["prev_autoconfig"] == "http://corp/proxy.pac"
+    core.install_pac(c, True)                        # already ours, nothing changed: keep the address
+    assert reg["AutoConfigURL"] == first
+    import time; time.sleep(0.01)
+    core.install_pac(c, True, refresh=True)          # restart or new sites: a new mark, apps refetch
+    assert reg["AutoConfigURL"] != first and c["prev_autoconfig"] == "http://corp/proxy.pac"
+    core.install_pac(c, False)
+    assert reg["AutoConfigURL"] == "http://corp/proxy.pac"
+
+
+def test_vpn_pattern_ignores_teredo(monkeypatch):
+    class St:
+        def __init__(self, up): self.isup = up
+    stats = {"Teredo Tunneling Pseudo-Interface": St(True), "XmelTunnel": St(True), "happ-xray": St(True)}
+    monkeypatch.setattr(core.psutil, "net_if_stats", lambda: stats)
+    assert core.vpn_adapter(core.DEFAULTS["vpn_adapter"]) == "happ-xray"
+    del stats["happ-xray"]
+    assert core.vpn_adapter(core.DEFAULTS["vpn_adapter"]) is None
+    stats["tun0"] = St(True)
+    assert core.vpn_adapter(core.DEFAULTS["vpn_adapter"]) == "tun0"
+
+
+def test_old_vpn_pattern_is_migrated(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"vpn_adapter": core.OLD_VPN_PATTERNS[0]}), encoding="utf-8")
+    assert core.load_config(str(p))["vpn_adapter"] == core.DEFAULTS["vpn_adapter"]

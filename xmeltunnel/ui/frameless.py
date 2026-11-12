@@ -10,8 +10,8 @@ import sys
 from ctypes import wintypes
 
 from xmeltunnel.i18n import tr
-from PyQt6.QtCore import QEvent, QSize, Qt, QTimer
-from PyQt6.QtGui import QFont, QFontDatabase, QPainter
+from PyQt6.QtCore import QUrl, QEvent, QSize, Qt, QTimer
+from PyQt6.QtGui import QDesktopServices, QFont, QFontDatabase, QPainter
 from PyQt6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QStyle, QStyleOption,
                              QVBoxLayout, QWidget)
 
@@ -66,6 +66,9 @@ def icon_font(size: int = 10) -> QFont | None:
     return None
 
 
+
+LINKS = (("GITHUB", "https://github.com/igorxmel/XmelTunnel"),)
+
 class CaptionButton(QPushButton):
     def __init__(self, glyph: str, tip: str):
         super().__init__()
@@ -99,12 +102,29 @@ class TitleBar(QWidget):
             self.row.addWidget(ic)
         self.caption = QLabel(title, objectName="TitleCaption")
         self.row.addWidget(self.caption)
+        if not compact:
+            from xmeltunnel import __version__
+
+            self.version = QLabel(f"v{__version__}", objectName="TitleVersion")
+            self.row.addWidget(self.version)
         self.slot = QHBoxLayout()  # the main window may put tabs here
         self.slot.setContentsMargins(10, 0, 0, 0)
         self.row.addLayout(self.slot)
         self.row.addStretch(1)
         self.maximize: CaptionButton | None = None
         if not compact:
+            # links out live in the title bar: reachable from anywhere, apart from the window buttons
+            for text, url in LINKS:
+                link = QPushButton(text, objectName="TitleLink")
+                link.setCursor(Qt.CursorShape.PointingHandCursor)
+                link.setToolTip(url)
+                link.clicked.connect(lambda _=False, u=url: QDesktopServices.openUrl(QUrl(u)))
+                self.row.addWidget(link)
+            sep = QWidget(objectName="TitleSeparator")
+            sep.setFixedSize(1, 16)
+            self.row.addSpacing(4)
+            self.row.addWidget(sep, 0, Qt.AlignmentFlag.AlignVCenter)
+            self.row.addSpacing(4)
             mn = CaptionButton(GLYPH_MINIMIZE, tr("Minimize"))
             mn.clicked.connect(window.showMinimized)
             self.row.addWidget(mn)
@@ -272,8 +292,10 @@ class FramelessDialog(QDialog):
         inner.addWidget(self.body, 1)
 
 
-def _message(parent, title: str, text: str, buttons: list[tuple[str, bool, bool]]) -> bool:
-    """buttons: (label, primary, result). Returns the pressed button's result (close box = False)."""
+def _message(parent, title: str, text: str, buttons: list[tuple[str, bool, bool]], danger: bool = False) -> bool:
+    """buttons: (label, primary, result). Returns the pressed button's result (close box = False).
+
+    danger: the primary button is red (removing, deleting)."""
     d = FramelessDialog(parent, title)
     d.setMinimumWidth(420)
     lay = QVBoxLayout(d.body)
@@ -287,7 +309,7 @@ def _message(parent, title: str, text: str, buttons: list[tuple[str, bool, bool]
     row.addStretch()
     result = {"v": False}
     for label, primary, value in buttons:
-        b = QPushButton(label, objectName="primary" if primary else "")
+        b = QPushButton(label, objectName=("danger" if danger else "primary") if primary else "")
         b.clicked.connect(lambda _=False, v=value: (result.update(v=v), d.accept()))
         if primary:
             b.setDefault(True)
@@ -301,8 +323,8 @@ def info(parent, title: str, text: str) -> None:
     _message(parent, title, text, [(tr("OK"), True, True)])
 
 
-def confirm(parent, title: str, text: str, yes: str = "OK", no: str = "") -> bool:
-    return _message(parent, title, text, [(no or tr("Cancel"), False, False), (yes, True, True)])
+def confirm(parent, title: str, text: str, yes: str = "OK", no: str = "", danger: bool = False) -> bool:
+    return _message(parent, title, text, [(no or tr("Cancel"), False, False), (yes, True, True)], danger)
 
 
 def ask_text(parent, title: str, label: str, value: str = "") -> str | None:

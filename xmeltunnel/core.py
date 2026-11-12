@@ -5,6 +5,7 @@ The UI only reads Engine.snapshot() and calls its methods; all work happens in b
 
 from __future__ import annotations
 
+import hashlib
 import http.server
 import ipaddress
 import json
@@ -19,7 +20,7 @@ import urllib.request
 
 import psutil
 
-from xmeltunnel import APP_NAME, profiles
+from xmeltunnel import APP_NAME, i18n, pinger, profiles, routing, servers, updater
 from xmeltunnel.i18n import tr
 
 try:
@@ -30,6 +31,9 @@ except ImportError:  # tests on non-Windows
 OK, WARN, DOWN, OFF = "ok", "warn", "down", "unknown"
 
 DEFAULTS = {
+    "server_enabled": True,             # «Disconnect» on the server card turns it off (no tunnel, no PAC)
+    "server_mode": "ssh",               # ssh = your own server over SSH; link = a share link (ss://, vless://…)
+    "server_link": "",
     "server": "",                       # user@host, bare IP (-> root@IP) or an alias from ~/.ssh/config
     "ssh_port": 22,
     "ssh_key": r"~\.ssh\id_ed25519",
@@ -40,15 +44,49 @@ DEFAULTS = {
     "reconnect_delay": 5,
     "language": "",                     # "" = follow Windows
     "require_vpn": False,
-    "vpn_adapter": r"happ|xray|wireguard|wintun|clash|sing-?box|outline|amnezia|throne|vpn|tun",
+    # «tun» only as a word or with a number: «Teredo Tunneling Pseudo-Interface» is Windows' own, not a VPN
+    "vpn_adapter": r"happ|xray|wireguard|wintun|clash|sing-?box|outline|amnezia|throne|vpn|\btun\b|tun\d",
     "profiles": None,                   # None = first run, filled with presets
     "prev_autoconfig": None,            # the user's own PAC URL before we replaced it
+    # routing mode: the whole PC goes direct except these lists (see routing.py)
+    "route_enabled": False,
+    "route_default": "direct",          # where everything not listed goes: direct, vpn or server
+    # 0.2 test builds kept three lists here; they become profiles once (see migrate_route_lists)
+    "route_direct": None,
+    "route_vpn": None,
+    "route_server": None,
+    "routes_migrated": False,
+    "ss_port": 8388,                    # Shadowsocks on the server, installed from Settings
+    "ss_key": "",
+    # the built-in VPN client: servers from links and subscriptions
+    "vpn_source": "adapter",            # adapter = your VPN client (Happ…); servers = XmelTunnel's own list
+    "vpn_server": "auto",               # a server id, "auto" (fastest) or "auto:FI" (fastest in a country)
+    "servers": [],
+    "subscriptions": [],                # {id, url, title, updated_at, count, error, info}
+    "server_checks": {},                # server id -> last check result
+    "servers_via_adapter": False,       # reach these servers through the VPN client's adapter
+    "sharing_used": False,              # friends have access to your server: check their limits now and then
+    "check_updates": True,
+    # app
+    "theme": "system",                  # system, dark, light
+    "ui_scale": 0.0,                    # 0 = as in Windows; applied at start (QT_SCALE_FACTOR)
+    "start_minimized": False,
+    "close_to_tray": True,
+    "notifications": True,
+    "route_on_start": True,             # turn the routing mode back on at start if it was on
+    "route_no_uac": False,              # start the routing mode through a scheduled task (one UAC, once)
+    "window": None,                     # [width, height, maximized]
+    "expanded_profiles": [],            # profile ids shown with their apps
+    "notified_version": "",             # a new version is announced in the tray once
 }
+UPDATE_CHECK_EVERY = 6 * 3600
+UPDATE_FIRST_CHECK = 20
 EDITABLE = ("server", "ssh_port", "ssh_key", "remote_proxy_port", "local_proxy_port", "pac_port", "language",
             "require_vpn", "vpn_adapter")
 
 FALLBACK_CHECK = "https://www.cloudflare.com/cdn-cgi/trace"
-NOT_VPN = re.compile(r"tailscale|virtualbox|hyper-v|vethernet|vmware|loopback", re.I)
+OLD_VPN_PATTERNS = (r"happ|xray|wireguard|wintun|clash|sing-?box|outline|amnezia|throne|vpn|tun",)
+NOT_VPN = re.compile(r"teredo|isatap|6to4|pseudo-interface|xmeltunnel|xt-route|tailscale|virtualbox|hyper-v|vethernet|vmware|loopback", re.I)
 EXIT_CHECK_EVERY = 60
 POLL_EVERY = 3
 RESOLVE_EVERY = 300
@@ -81,13 +119,20 @@ def normalize_server(value: str) -> str:
 
 def load_config(path: str | None = None) -> dict:
     cfg = json.loads(json.dumps(DEFAULTS))
+    cfg["_first_run"] = not os.path.exists(path or config_path())  # not saved: only DEFAULTS keys are
     try:
         with open(path or config_path(), encoding="utf-8") as f:
             cfg.update(json.load(f))
     except (OSError, ValueError):
         pass  # broken or missing file must not kill the app
     cfg["server"] = normalize_server(str(cfg["server"]))
-    cfg["profiles"] = [profiles.normalize(p) for p in (cfg["profiles"] or profiles.default_profiles())]
+    # A fresh install starts empty: presets are offered in «Add profile», nothing is switched on for you.
+    cfg["profiles"] = [profiles.normalize(p) for p in (cfg["profiles"] or [])]
+    migrate_route_lists(cfg)
+    if cfg["vpn_adapter"] in OLD_VPN_PATTERNS:  # the old default matched Teredo: move to the new one
+        cfg["vpn_adapter"] = DEFAULTS["vpn_adapter"]
+    if cfg["route_default"] not in ("direct", "vpn", "server"):
+        cfg["route_default"] = "direct"
     return cfg
 
 
@@ -128,8 +173,38 @@ def ssh_args(cfg: dict) -> list[str]:
             "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new"]
 
 
+def link_server(cfg: dict) -> dict | None:
+    """The parsed share link of the «link» mode, or None."""
+    if cfg.get("server_mode") != "link" or not cfg.get("server_link"):
+        return None
+    try:
+        return servers.parse_link(cfg["server_link"])
+    except (servers.LinkError, ValueError, KeyError, UnicodeError):
+        return None
+
+
+def has_server(cfg: dict) -> bool:
+    return bool(link_server(cfg)) if cfg.get("server_mode") == "link" else bool(cfg["server"])
+
+
+def server_host(cfg: dict) -> str:
+    """What to show as «Server: …»."""
+    ls = link_server(cfg)
+    if cfg.get("server_mode") == "link":
+        return ls["host"] if ls else ""
+    return cfg["server"].split("@")[-1]
+
+
 def server_ip(cfg: dict) -> str:
-    """Server IP from user@IP, otherwise via `ssh -G` (aliases) and DNS."""
+    """Server IP from user@IP, otherwise via `ssh -G` (aliases) and DNS. In the link mode: the link's host."""
+    if cfg.get("server_mode") == "link":
+        ls = link_server(cfg)
+        if not ls:
+            return ""
+        try:
+            return socket.gethostbyname(ls["host"])
+        except OSError:
+            return ls["host"]
     host = cfg["server"].split("@")[-1]
     if not host:
         return ""
@@ -148,12 +223,37 @@ def server_ip(cfg: dict) -> str:
 
 # ---------- PAC and Windows settings ----------
 
+LIST_NAMES = {"en": {"direct": "Direct list", "server": "Server list", "vpn": "VPN list"},
+              "ru": {"direct": "Список «Напрямую»", "server": "Список «Через сервер»", "vpn": "Список «Через VPN»"}}
+
+
+def migrate_route_lists(cfg: dict) -> None:
+    """The three lists of the 0.2 test builds become ordinary profiles, once."""
+    if cfg.get("routes_migrated"):
+        return
+    lang = cfg.get("language") or i18n.system_language()
+    names = LIST_NAMES.get(lang, LIST_NAMES["en"])
+    taken = {p["id"] for p in cfg["profiles"]}
+    for key, target in (("route_direct", "direct"), ("route_server", "server"), ("route_vpn", "vpn")):
+        lines = cfg.get(key) or []
+        if routing.has_items(lines) and f"list-{target}" not in taken:
+            cfg["profiles"].append(profiles.normalize({"id": f"list-{target}", "name": names[target],
+                                                       "target": target, "entries": lines, "enabled": True}))
+        cfg[key] = None
+    cfg["routes_migrated"] = True
+
+
 def enabled_profiles(cfg: dict) -> list[dict]:
     return [p for p in cfg["profiles"] if p["enabled"]]
 
 
+def pac_profiles(cfg: dict) -> list[dict]:
+    """Enabled profiles whose sites go through the server by the PAC file (no admin rights needed)."""
+    return [p for p in cfg["profiles"] if p["enabled"] and p.get("target", "server") == "server"]
+
+
 def pac_text(cfg: dict) -> str:
-    domains = sorted({d for p in enabled_profiles(cfg) for d in p["domains"]})
+    domains = sorted({d for p in pac_profiles(cfg) for d in p["domains"]})
     listed = ", ".join(f'"{d}"' for d in domains)
     # No "; DIRECT" fallback: if the tunnel is down, these sites fail instead of silently going direct.
     return f"""// XmelTunnel: these domains go through your server, everything else is direct.
@@ -169,6 +269,18 @@ function FindProxyForURL(url, host) {{
 
 def pac_url(cfg: dict) -> str:
     return f"http://127.0.0.1:{cfg['pac_port']}/xmeltunnel.pac"
+
+
+def is_our_pac(url, cfg: dict) -> bool:
+    """Our PAC address, with or without the ?v= mark."""
+    return bool(url) and str(url).split("?", 1)[0] == pac_url(cfg)
+
+
+def fresh_pac_url(cfg: dict) -> str:
+    """Chromium-based apps (Claude Desktop, Electron) fetch a PAC file once and keep it until the address in
+    Windows settings changes. A new mark makes them fetch it again: after XmelTunnel restarts or updates
+    (they fell back to direct while nobody served it) and after the list of sites changed."""
+    return f"{pac_url(cfg)}?v={int(time.time() * 1000)}"
 
 
 def _reg_get(path: str, name: str):
@@ -207,16 +319,19 @@ def _notify_inet_changed() -> None:
 
 
 def pac_installed(cfg: dict) -> bool:
-    return _reg_get(INET_KEY, "AutoConfigURL") == pac_url(cfg)
+    return is_our_pac(_reg_get(INET_KEY, "AutoConfigURL"), cfg)
 
 
-def install_pac(cfg: dict, on: bool) -> None:
-    """Point Windows at our PAC file, remembering and later restoring the user's own one."""
+def install_pac(cfg: dict, on: bool, refresh: bool = False) -> None:
+    """Point Windows at our PAC file, remembering and later restoring the user's own one.
+
+    refresh: write a new ?v= mark even if ours is already there, so apps fetch the PAC file again."""
     current = _reg_get(INET_KEY, "AutoConfigURL")
-    if on and current != pac_url(cfg):
-        cfg["prev_autoconfig"] = current
-        _reg_set(INET_KEY, "AutoConfigURL", pac_url(cfg))
-    elif not on and current == pac_url(cfg):
+    if on and (refresh or not is_our_pac(current, cfg)):
+        if not is_our_pac(current, cfg):
+            cfg["prev_autoconfig"] = current
+        _reg_set(INET_KEY, "AutoConfigURL", fresh_pac_url(cfg))
+    elif not on and is_our_pac(current, cfg):
         _reg_set(INET_KEY, "AutoConfigURL", cfg.get("prev_autoconfig"))
         cfg["prev_autoconfig"] = None
     _notify_inet_changed()
@@ -260,7 +375,7 @@ def set_claude_code_proxy(cfg: dict, on: bool, path: str = CLAUDE_SETTINGS) -> N
 
 
 def wants_claude_code(cfg: dict) -> bool:
-    return any(a["method"] == "claude_code" for p in enabled_profiles(cfg) for a in p["apps"])
+    return any(a["method"] == "claude_code" for p in pac_profiles(cfg) for a in p["apps"])
 
 
 def autostart_command() -> str:
@@ -286,8 +401,16 @@ def remove_from_pc(cfg: dict, claude_settings: str = CLAUDE_SETTINGS, data: str 
     import shutil
 
     done = []
+    path = data or data_dir()
+    if routing.helper_alive(path):
+        routing.request_stop(path)
+        for _ in range(30):
+            if not routing.helper_alive(path):
+                break
+            time.sleep(0.5)
+        done.append("routing")
     current = _reg_get(INET_KEY, "AutoConfigURL")
-    if current == pac_url(cfg):
+    if is_our_pac(current, cfg):
         _reg_set(INET_KEY, "AutoConfigURL", cfg.get("prev_autoconfig"))
         _notify_inet_changed()
         done.append("pac")
@@ -300,7 +423,8 @@ def remove_from_pc(cfg: dict, claude_settings: str = CLAUDE_SETTINGS, data: str 
     if _reg_get(RUN_KEY, RUN_NAME) is not None:
         _reg_set(RUN_KEY, RUN_NAME, None)
         done.append("autostart")
-    path = data or data_dir()
+    if routing.task_supported() and cfg.get("route_no_uac") and routing.remove_task():
+        done.append("task")
     shutil.rmtree(path, ignore_errors=True)
     if not os.path.exists(path):
         done.append("data")
@@ -387,6 +511,15 @@ def vpn_adapter(pattern: str) -> str | None:
     return None
 
 
+def network_adapters() -> list[str]:
+    """Adapters that are up, for picking the VPN one by name (our own TUN and loopback left out)."""
+    try:
+        stats = psutil.net_if_stats()
+    except OSError:
+        return []
+    return sorted(n for n, st in stats.items() if st.isup and not re.search(r"loopback|xmeltunnel|xt-route", n, re.I))
+
+
 def port_open(port: int) -> bool:
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=1):
@@ -409,17 +542,24 @@ def check_exit(proxy_port: int, url: str = FALLBACK_CHECK) -> tuple[str, str, in
 def evaluate(cfg: dict, st: dict) -> tuple[str, list[tuple[str, str]]]:
     """Overall level and a list of (key, human text) problems. Pure, for tests."""
     problems = []
-    if not cfg["server"]:
-        return WARN, [("setup", tr("Server is not set up yet"))]
+    if has_server(cfg) and not cfg.get("server_enabled", True):
+        return OFF, []  # the user disconnected it on purpose: no warnings
+    if not has_server(cfg):
+        # The server is optional: the routing mode works without it, only profiles need it.
+        if pac_profiles(cfg):
+            return WARN, [("setup", tr("Profiles need your server: set it up in Settings."))]
+        return OFF, []
     if not st["tunnel"]:
         if cfg["require_vpn"] and not st["vpn"]:
-            problems.append(("vpn", tr("VPN is off: turn it on, the server is reachable only through it.")))
+            problems.append(("vpn", tr("The server waits for the VPN: it is reachable only through it.")))
         else:
             problems.append(("tunnel", tr("No connection to the server: the SSH tunnel does not come up.")))
     elif st["exit_ok"] is False:
         problems.append(("exit", tr("The tunnel is up, but the exit is not your server ({ip}).",
                                     ip=st["exit_ip"] or "?")))
     for p in cfg["profiles"]:
+        if p.get("target", "server") != "server":
+            continue  # leaks are about the server path; other targets need the routing mode anyway
         for i, app in enumerate(p["apps"]):
             a = st["apps"].get((p["id"], i))
             if not a or not a["direct"]:
@@ -432,12 +572,13 @@ def evaluate(cfg: dict, st: dict) -> tuple[str, list[tuple[str, str]]]:
                 problems.append((f"off:{p['id']}:{i}", tr("{app} goes direct: the {profile} profile is off.",
                                                           app=app["name"], profile=p["name"])))
     keys = [k for k, _ in problems]
-    if not st["tunnel"] or st["exit_ok"] is False or any(k.startswith("leak") for k in keys):
+    waiting = "vpn" in keys  # the server is fine, only the VPN it needs is off: yellow, not red
+    if (not st["tunnel"] and not waiting) or st["exit_ok"] is False or any(k.startswith("leak") for k in keys):
         level = DOWN
-    elif not enabled_profiles(cfg) or st["exit_ok"] is None or any(k.startswith("off") for k in keys):
+    elif waiting or st["exit_ok"] is None:
         level = WARN
     else:
-        level = OK
+        level = OK  # the ring is about the connection; switched-off profiles show their own yellow dot
     return level, problems
 
 
@@ -483,15 +624,27 @@ def logged(fn):
 
 
 def kill_stale_tunnels(cfg: dict) -> None:
-    """An ssh left over from a killed previous run keeps the port busy — remove it."""
+    """An ssh (or a link proxy) left over from a killed previous run keeps the port busy — remove it."""
     mark = f"127.0.0.1:{cfg['local_proxy_port']}:127.0.0.1:{cfg['remote_proxy_port']}"
     for p in psutil.process_iter(["name", "cmdline"]):
         try:
-            if (p.info["name"] or "").lower() == "ssh.exe" and mark in " ".join(p.info["cmdline"] or []):
+            line = " ".join(p.info["cmdline"] or [])
+            name = (p.info["name"] or "").lower()
+            if (name == "ssh.exe" and mark in line) or (name == "sing-box.exe" and "server-proxy.json" in line):
                 p.kill()
                 log(f"killed ssh left from a previous run (pid {p.pid})")
         except (psutil.Error, OSError):
             pass
+
+
+def _net_error(e: Exception) -> str:
+    """A short human error for a failed download."""
+    code = getattr(e, "code", None)
+    if code == 404:
+        return tr("the service answered 404: the link is wrong or works only in its own app")
+    if code:
+        return tr("the service answered {code}", code=code)
+    return str(getattr(e, "reason", "") or e)[:160] or type(e).__name__
 
 
 class PacHandler(http.server.BaseHTTPRequestHandler):
@@ -523,14 +676,22 @@ class Engine:
         self._resolved_at = 0.0
         self.state = {"vpn": None, "tunnel": False, "exit_ok": None, "exit_ip": None, "exit_loc": None,
                       "exit_ms": None, "exit_at": 0, "checking": False, "since": None,
-                      "apps": {}, "pac": pac_installed(self.cfg), "autostart": autostart_enabled()}
+                      "apps": {}, "pac": pac_installed(self.cfg), "autostart": autostart_enabled(),
+                      "route": {"status": "off", "error": "", "progress": 0, "checks": {}, "checking": False,
+                                "phys": None, "vpn": None},
+                      "servers": {"checking": False, "done": 0, "total": 0, "error": "", "updating": False},
+                      "update": {"version": None, "status": "idle", "progress": 0, "error": "", "path": "",
+                                 "kind": updater.kind(), "checked_at": 0}}
         self.level, self.problems = WARN, []
         self.notes: list[tuple[str, str]] = []
         self._notified: dict[str, float] = {}
         self._seen: dict = {}
         self._exit_now = threading.Event()
         self._restart = threading.Event()
-        self._refresh_targets(force=True)
+        self._route_check = threading.Event()
+        self._update_now = threading.Event()
+        self._route_busy = threading.Lock()
+        # leak targets are resolved by the monitor thread: DNS can be slow, the window must not wait for it
         self.state["apps"] = scan(self.cfg, self.targets)
         self._seen = {k: set(v["pids"]) for k, v in self.state["apps"].items()}
 
@@ -540,6 +701,9 @@ class Engine:
         with self.lock:
             s = dict(self.state)
             s["apps"] = {k: dict(v) for k, v in self.state["apps"].items()}
+            s["route"] = dict(self.state["route"], checks=dict(self.state["route"]["checks"]))
+            s["update"] = dict(self.state["update"])
+            s["servers"] = dict(self.state["servers"])
             return s, self.level, list(self.problems)
 
     def take_notes(self) -> list[tuple[str, str]]:
@@ -558,21 +722,27 @@ class Engine:
         with self.cfg_lock:
             save_config(self.cfg)
 
-    def apply_profiles(self) -> None:
+    def apply_profiles(self, refresh_pac: bool = False) -> None:
         """After profiles changed: PAC body, Windows PAC, Claude Code settings, leak targets."""
         with self.cfg_lock:
-            PacHandler.body = pac_text(self.cfg).encode()
-            install_pac(self.cfg, bool(enabled_profiles(self.cfg)))
-            want = wants_claude_code(self.cfg)
+            body = pac_text(self.cfg).encode()
+            changed = body != PacHandler.body
+            PacHandler.body = body
+            on = self.cfg.get("server_enabled", True)
+            install_pac(self.cfg, on and bool(pac_profiles(self.cfg)), refresh=refresh_pac or changed)
+            want = on and wants_claude_code(self.cfg)
             try:
                 if want != claude_code_proxy_on(self.cfg):
                     set_claude_code_proxy(self.cfg, want)
             except (OSError, ValueError) as e:
                 log(f"Claude Code settings: {e}")
             self.save()
-        self._refresh_targets(force=True)
+        self._resolved_at = 0.0  # the monitor thread re-resolves; DNS here would freeze the window
         with self.lock:
             self.state["pac"] = pac_installed(self.cfg)
+            route_status = self.state["route"]["status"]
+        if self.cfg["route_enabled"] and route_status in ("running", "error"):
+            self._route_bg(self._route_start)  # the helper reloads sing-box with the new rules
 
     def set_profile_enabled(self, pid: str, on: bool) -> None:
         with self.cfg_lock:
@@ -596,6 +766,36 @@ class Engine:
             self.cfg["profiles"] = [p for p in self.cfg["profiles"] if p["id"] != pid]
         self.apply_profiles()
 
+    def set_no_uac(self, on: bool) -> bool:
+        """Register or remove the scheduled task (one UAC prompt). Returns whether it is now as asked."""
+        ok = routing.install_task() if on else routing.remove_task()
+        with self.cfg_lock:
+            self.cfg["route_no_uac"] = routing.task_installed()
+            self.save()
+        log(f"start without UAC: {'on' if self.cfg['route_no_uac'] else 'off'}")
+        return ok
+
+    def apply_app_settings(self, values: dict) -> None:
+        """App tab of Settings: theme, scale, start options. Autostart lives in the registry, not the config."""
+        values = dict(values)
+        values.pop("route_no_uac", None)  # handled by set_no_uac: it needs a UAC prompt
+        auto = values.pop("autostart", None)
+        with self.cfg_lock:
+            self.cfg.update(values)
+            self.save()
+        if auto is not None and auto != autostart_enabled():
+            self.set_autostart(auto)
+
+    def set_server_enabled(self, on: bool) -> None:
+        """The server card's Connect / Disconnect."""
+        with self.cfg_lock:
+            self.cfg["server_enabled"] = on
+            self.save()
+        self.apply_profiles(refresh_pac=on)
+        if not on:
+            self.reconnect()  # stops ssh / the link proxy; the tunnel thread then waits
+        log(f"server: {'connected' if on else 'disconnected'} by the user")
+
     def set_autostart(self, on: bool) -> None:
         set_autostart(on)
         with self.lock:
@@ -607,7 +807,10 @@ class Engine:
             pac_was = pac_installed(old)
             code_was = claude_code_proxy_on(old)
             self.cfg.update(new)
-            self.ip = server_ip(self.cfg)
+            if any(old.get(k) != self.cfg.get(k) for k in ("server", "server_mode", "server_link")):
+                self.ip = ""
+                # aliases and host names need ssh -G and DNS: not in the window's thread
+                threading.Thread(target=lambda: setattr(self, "ip", server_ip(self.cfg)), daemon=True).start()
             if pac_was and old["pac_port"] != self.cfg["pac_port"]:
                 install_pac(old, False)
             if code_was and old["local_proxy_port"] != self.cfg["local_proxy_port"]:
@@ -615,20 +818,393 @@ class Engine:
         self.apply_profiles()
         if old["pac_port"] != self.cfg["pac_port"]:
             self._restart.set()
-        self.reconnect()
+        ssh_keys = ("server", "ssh_port", "ssh_key", "remote_proxy_port", "local_proxy_port", "server_mode",
+                    "server_link")
+        if any(old[k] != self.cfg[k] for k in ssh_keys):
+            self.reconnect()  # only then: dropping the tunnel for a theme change is pointless
 
     def start(self) -> None:
         kill_stale_tunnels(self.cfg)
-        if enabled_profiles(self.cfg):
-            self.apply_profiles()  # restore PAC / Claude Code settings if something reset them
+        if pac_profiles(self.cfg):
+            self.apply_profiles(refresh_pac=True)  # apps may have fallen back to direct while we were closed  # restore PAC / Claude Code settings if something reset them
         PacHandler.body = pac_text(self.cfg).encode()
-        for target in (self._serve_pac, self._tunnel, self._exit_checker, self._monitor):
+        for target in (self._serve_pac, self._tunnel, self._exit_checker, self._monitor, self._route_checker,
+                       self._update_checker, self._subscription_updater):
             threading.Thread(target=logged(target), daemon=True).start()
+        if routing.helper_alive(data_dir()) or (self.cfg["route_enabled"] and self.cfg["route_on_start"]):
+            self._route_bg(self._route_start)  # take over a running helper or start as the user left it
 
     def stop(self) -> None:
         self.running = False
         self._exit_now.set()
         self.reconnect()
+
+    # --- built-in VPN client: servers ---
+
+    def _servers_set(self, **kw) -> None:
+        with self.lock:
+            self.state["servers"].update(kw)
+
+    def _servers_changed(self) -> None:
+        self.save()
+        if self.cfg["route_enabled"] and self.cfg.get("vpn_source") == "servers":
+            self._route_bg(self._route_start)
+
+    def add_servers_text(self, text: str) -> tuple[int, list[str]]:
+        """Links or a subscription URL. Returns (servers added, errors); a URL is fetched in the background."""
+        text = text.strip()
+        if re.match(r"^https?://\S+$", text):
+            sid = hashlib.sha1(text.encode()).hexdigest()[:10]
+            with self.cfg_lock:
+                if not any(s["id"] == sid for s in self.cfg["subscriptions"]):
+                    self.cfg["subscriptions"].append({"id": sid, "url": text, "title": "", "updated_at": 0,
+                                                      "count": 0, "error": "", "info": {}})
+                self.save()
+            self.refresh_subscriptions([sid])
+            return 0, []
+        found, errors = servers.parse_text(text)
+        with self.cfg_lock:
+            have = {s["id"] for s in self.cfg["servers"]}
+            new = [s for s in found if s["id"] not in have]
+            self.cfg["servers"] += new
+        self._servers_changed()
+        return len(new), errors
+
+    def refresh_subscriptions(self, ids: list[str] | None = None) -> None:
+        def run():
+            self._servers_set(updating=True)
+            for sub in list(self.cfg["subscriptions"]):
+                if ids and sub["id"] not in ids:
+                    continue
+                try:
+                    body, info = servers.fetch_subscription(sub["url"])
+                    found, errors = servers.parse_text(body, sub=sub["id"])
+                    err = "" if found else ("; ".join(errors[:2]) or tr("no servers in the answer"))
+                except Exception as e:  # noqa: BLE001
+                    found, info, err = None, {}, _net_error(e)
+                with self.cfg_lock:
+                    sub.update(updated_at=time.time(), error=err)
+                    if found is not None and found:
+                        sub.update(count=len(found), info=info, title=info.get("title") or sub.get("title", ""))
+                        others = [s for s in self.cfg["servers"] if s.get("sub") != sub["id"]]
+                        self.cfg["servers"] = others + found
+                log(f"subscription {sub['id']}: {len(found or [])} servers {err}")
+            with self.cfg_lock:
+                self._servers_changed()
+            self._servers_set(updating=False)
+        threading.Thread(target=logged(run), daemon=True).start()
+
+    def _subscription_updater(self) -> None:
+        """Subscriptions refresh themselves: as often as the service asks (profile-update-interval), else 12 h."""
+        time.sleep(60)
+        while self.running:
+            due = [s["id"] for s in list(self.cfg["subscriptions"])
+                   if time.time() - s.get("updated_at", 0) > 3600 * max(1, (s.get("info") or {}).get("update_hours") or 12)]
+            if due and not self.state["servers"].get("updating"):
+                self.refresh_subscriptions(due)
+            if self.cfg.get("sharing_used") and self.cfg.get("ss_key") and \
+                    time.time() - getattr(self, "_limits_at", 0) > 6 * 3600:
+                self._limits_at = time.time()
+                try:  # friends whose time or traffic ran out are paused even if nobody opens the panel
+                    from xmeltunnel import sharing
+
+                    st = sharing.fetch(self.cfg)
+                    paused = sharing.enforce_limits(st["users"])
+                    if paused:
+                        sharing.apply(self.cfg, st["users"])
+                        log(f"friends paused (time or traffic ran out): {', '.join(paused)}")
+                except Exception as e:  # noqa: BLE001 — the server may be unreachable right now
+                    log(f"friends' limits: {e!r}")
+            for _ in range(30 * 60):
+                if not self.running:
+                    return
+                time.sleep(1)
+
+    def remove_subscription(self, sid: str) -> None:
+        with self.cfg_lock:
+            self.cfg["subscriptions"] = [s for s in self.cfg["subscriptions"] if s["id"] != sid]
+            self.cfg["servers"] = [s for s in self.cfg["servers"] if s.get("sub") != sid]
+            self._servers_changed()
+
+    def remove_servers(self, ids: list[str]) -> None:
+        with self.cfg_lock:
+            self.cfg["servers"] = [s for s in self.cfg["servers"] if s["id"] not in ids]
+            if self.cfg["vpn_server"] in ids:
+                self.cfg["vpn_server"] = "auto"
+            self._servers_changed()
+
+    def set_vpn_source(self, source: str) -> None:
+        if source in ("adapter", "servers") and source != self.cfg.get("vpn_source"):
+            with self.cfg_lock:
+                self.cfg["vpn_source"] = source
+                self._servers_changed()
+
+    def set_vpn_server(self, pick: str) -> None:
+        if pick != self.cfg.get("vpn_server"):
+            with self.cfg_lock:
+                self.cfg["vpn_server"] = pick
+                self._servers_changed()
+
+    def check_servers(self, ids: list[str] | None = None) -> None:
+        """Real requests through each server (see pinger.py), in the background."""
+        if self.state["servers"].get("checking"):
+            return
+        todo = [s for s in self.cfg["servers"] if not ids or s["id"] in ids]
+        if not todo:
+            return
+
+        def run():
+            self._servers_set(checking=True, done=0, total=len(todo), error="")
+            try:
+                phys = routing.physical_adapter(self.cfg["vpn_adapter"])
+                if self.cfg.get("servers_via_adapter"):
+                    phys = vpn_adapter(self.cfg["vpn_adapter"]) or phys
+                res = pinger.check(data_dir(), todo, phys, lambda d, t: self._servers_set(done=d, total=t))
+                with self.cfg_lock:
+                    # a new dict, not .update(): the window may be reading the old one right now
+                    self.cfg["server_checks"] = {**self.cfg["server_checks"], **res}
+                    self._servers_changed() if (self.cfg.get("vpn_server") or "").startswith("auto") else self.save()
+            except Exception as e:  # noqa: BLE001
+                log(f"server check failed: {e!r}")
+                self._servers_set(error=str(e)[:200])
+            self._servers_set(checking=False)
+        threading.Thread(target=logged(run), daemon=True).start()
+
+    # --- updates ---
+
+    def _update_set(self, **kw) -> None:
+        with self.lock:
+            self.state["update"].update(kw)
+
+    def check_updates_now(self) -> None:
+        self._update_set(status="checking", error="")
+        self._update_now.set()
+
+    def set_check_updates(self, on: bool) -> None:
+        with self.cfg_lock:
+            self.cfg["check_updates"] = on
+            self.save()
+        if on:
+            self._update_now.set()
+
+    def _update_checker(self) -> None:
+        manual = self._update_now.wait(UPDATE_FIRST_CHECK)
+        while self.running:
+            self._update_now.clear()
+            if (manual or self.cfg["check_updates"]) and self.state["update"]["kind"] != "source" \
+                    and self.state["update"]["status"] not in ("downloading", "ready"):
+                self._update_set(status="checking", error="")
+                try:
+                    version = updater.check()
+                    self._update_set(version=version, status="idle", checked_at=time.time())
+                    if version and version != self.cfg.get("notified_version"):
+                        with self.cfg_lock:
+                            self.cfg["notified_version"] = version
+                            self.save()
+                        with self.lock:
+                            self.notes.append((APP_NAME, tr("Version {v} is available. Open XmelTunnel to update.",
+                                                            v=version)))
+                except Exception as e:  # noqa: BLE001 — no network or GitHub hiccup: try again later
+                    log(f"update check failed: {e!r}")
+                    self._update_set(status="error", error=str(e) or type(e).__name__, checked_at=time.time())
+            elif manual and self.state["update"]["kind"] == "source":
+                self._update_set(status="idle", checked_at=time.time())
+            manual = self._update_now.wait(UPDATE_CHECK_EVERY)
+
+    def download_update(self) -> None:
+        version = self.state["update"]["version"]
+        if not version or self.state["update"]["status"] in ("downloading", "ready"):
+            return
+
+        def run():
+            self._update_set(status="downloading", progress=0, error="")
+            try:
+                path = updater.download(version, os.path.join(data_dir(), "update"),
+                                        lambda pct: self._update_set(progress=pct))
+            except Exception as e:  # noqa: BLE001
+                log(f"update download failed: {e!r}")
+                return self._update_set(status="error", error=tr("Could not download the update: {err}",
+                                                                 err=str(e) or type(e).__name__))
+            log(f"update {version} downloaded: {path}")
+            self._update_set(status="ready", path=path)
+        threading.Thread(target=logged(run), daemon=True).start()
+
+    def install_update(self, args: list[str]) -> None:
+        """Called by the UI when the download is ready; the UI quits right after."""
+        u = self.state["update"]
+        if u["kind"] == "setup":
+            updater.install_setup(u["path"], args)
+        else:
+            updater.install_portable(u["path"], u["version"], args)
+        log(f"update {u['version']}: installing ({u['kind']})")
+
+    # --- routing mode ---
+
+    def _route_set(self, **kw) -> None:
+        with self.lock:
+            self.state["route"].update(kw)
+
+    def _route_bg(self, fn) -> None:
+        def run():
+            if not self._route_busy.acquire(blocking=False):
+                return
+            try:
+                fn()
+            finally:
+                self._route_busy.release()
+        threading.Thread(target=logged(run), daemon=True).start()
+
+    def set_route_enabled(self, on: bool) -> None:
+        with self.cfg_lock:
+            self.cfg["route_enabled"] = on
+            self.save()
+        self._route_bg(self._route_start if on else self._route_stop)
+
+    def retry_route(self) -> None:
+        if self.cfg["route_enabled"]:
+            self._route_bg(self._route_start)
+
+    def check_route(self) -> None:
+        self._route_check.set()
+
+    def set_route_default(self, default: str) -> None:
+        """Where everything not in an enabled profile goes: direct, vpn or server."""
+        if default not in ("direct", "vpn", "server") or default == self.cfg["route_default"]:
+            return
+        with self.cfg_lock:
+            self.cfg["route_default"] = default
+            self.save()
+        if self.cfg["route_enabled"]:
+            self._route_bg(self._route_start)
+
+    def set_server_ss(self, port: int, key: str) -> None:
+        with self.cfg_lock:
+            self.cfg["ss_port"], self.cfg["ss_key"] = port, key
+            self.save()
+        if self.cfg["route_enabled"]:
+            self._route_bg(self._route_start)
+
+    def _route_start(self) -> None:
+        data = data_dir()
+        with self.cfg_lock:
+            cfg = json.loads(json.dumps(self.cfg))
+        try:
+            if not routing.sing_box_ok(data):
+                self._route_set(status="downloading", progress=0, error="")
+                routing.download_sing_box(data, lambda pct: self._route_set(progress=pct))
+        except Exception as e:  # noqa: BLE001
+            log(f"routing: download failed: {e!r}")
+            return self._route_set(status="error", error=tr("Could not download sing-box: {err}", err=str(e)))
+        phys = routing.physical_adapter(cfg["vpn_adapter"])
+        vpn = vpn_adapter(cfg["vpn_adapter"])
+        self._route_set(phys=phys, vpn=vpn)
+        if not phys:
+            return self._route_set(status="error", error=tr("Normal network adapter not found."))
+        bad = routing.problems(cfg, vpn)
+        if "noservers" in bad:
+            return self._route_set(status="error", error=tr("No VPN server chosen: open «Servers…» and add some."))
+        if "novpn" in bad:
+            return self._route_set(status="error", error=tr("VPN is off: turn it on (TUN mode) and press Retry."))
+        if "noserver" in bad:
+            return self._route_set(status="error",
+                                   error=tr("Your server part is not installed: Lists… → Install on the server."))
+        conf = routing.build_config(cfg, self.ip, phys, vpn)
+        path = routing.config_file(data)
+        body = json.dumps(conf, ensure_ascii=False, indent=2)
+        try:
+            with open(path, encoding="utf-8") as f:
+                same = f.read() == body
+        except OSError:
+            same = False
+        alive = routing.helper_alive(data)
+        if same and alive and routing.read_state(data).get("status") == "running":
+            # nothing changed for sing-box (a theme, a PAC-only profile…): no restart, no outage
+            self._route_set(status="running", error="", phys=phys, vpn=vpn)
+            return
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            f.write(body)
+        os.replace(path + ".tmp", path)
+        if not alive:
+            self._route_set(status="starting", error="")
+            by_task = cfg.get("route_no_uac") and routing.task_supported() and routing.task_installed()
+            if not (routing.run_task(data) if by_task else routing.launch_helper(data)):
+                with self.cfg_lock:
+                    self.cfg["route_enabled"] = False
+                    self.save()
+                return self._route_set(status="off", error=tr("Admin rights were not given."))
+            for _ in range(120):  # a retry after a stuck adapter takes ~20 s
+                time.sleep(0.5)
+                if routing.read_state(data).get("status") in ("running", "stopped"):
+                    break
+        else:
+            # the helper restarts sing-box with the new config: wait for its fresh "running"
+            self._route_set(status="restarting", error="")
+            t0 = time.time()
+            for _ in range(60):
+                time.sleep(0.5)
+                st = routing.read_state(data)
+                if st.get("status") == "stopped" or (st.get("status") == "running" and st.get("at", 0) > t0):
+                    break
+        st = routing.read_state(data)
+        if st.get("status") == "running" and routing.helper_alive(data):
+            log(f"routing: on (direct={phys}, vpn={vpn})")
+            self._route_set(status="running", error="", checks={})
+            self._route_check.set()
+        else:
+            err = st.get("error") or routing.last_log_error(data) or tr("sing-box did not start")
+            log(f"routing: failed: {err}")
+            self._route_set(status="error", error=err)
+
+    def _route_stop(self) -> None:
+        data = data_dir()
+        if routing.helper_alive(data):
+            routing.request_stop(data)
+            for _ in range(30):
+                if not routing.helper_alive(data):
+                    break
+                time.sleep(0.5)
+        log("routing: off")
+        self._route_set(status="off", error="", checks={})
+
+    def _route_checker(self) -> None:
+        retry = 0
+        while self.running:
+            # a failed path is re-checked soon (sing-box may have been restarting), then every minute
+            self._route_check.wait(8 if retry else EXIT_CHECK_EVERY)
+            self._route_check.clear()
+            if not self.running:
+                return
+            with self.lock:
+                route = dict(self.state["route"])
+            data = data_dir()
+            if route["status"] in ("error", "starting", "restarting") and self.cfg["route_enabled"] \
+                    and routing.helper_alive(data) and routing.read_state(data).get("status") == "running":
+                self._route_set(status="running", error="")  # the helper got there after we stopped waiting
+                route["status"] = "running"
+            if route["status"] != "running":
+                retry = max(retry, 1) if route["status"] in ("starting", "restarting") else retry
+                continue
+            if routing.read_state(data).get("status") == "restarting":
+                retry = max(retry, 1)
+                continue
+            if not routing.helper_alive(data):
+                err = routing.read_state(data).get("error") or routing.last_log_error(data) or tr("stopped")
+                self._route_set(status="error", error=tr("VPN disconnected: {err}", err=err), checks={})
+                continue
+            self._route_set(checking=True)
+            checks = {}
+            for name in routing.CHECK_PORTS:
+                if name == "server" and not self.cfg.get("ss_key") and not link_server(self.cfg):
+                    continue
+                if name == "vpn" and not route["vpn"] and self.cfg.get("vpn_source") != "servers":
+                    continue  # no VPN client adapter; the built-in client needs none
+                try:
+                    checks[name] = routing.check_path(name)
+                except Exception as e:  # noqa: BLE001
+                    checks[name] = (type(e).__name__, None)
+            self._route_set(checks=checks, checking=False)
+            failed = any(loc is None for _, loc in checks.values())
+            retry = retry + 1 if failed and retry < 3 else 0
 
     # --- threads ---
 
@@ -647,23 +1223,58 @@ class Engine:
             srv.shutdown()
             srv.server_close()
 
+    def _link_proxy_cmd(self, cfg: dict) -> list[str] | None:
+        """«Your server» by a share link: a local HTTP/SOCKS proxy on sing-box (no admin rights) in place of
+        the SSH tunnel. Profiles, Claude Code and the exit check use it exactly like the SSH one."""
+        ls = link_server(cfg)
+        if not ls:
+            return None
+        data = data_dir()
+        routing.download_sing_box(data)
+        conf = {"log": {"level": "warn"},
+                "dns": {"servers": [{"type": "https", "tag": "doh", "server": routing.DOH_SERVER}], "final": "doh"},
+                "inbounds": [{"type": "mixed", "tag": "in", "listen": "127.0.0.1",
+                              "listen_port": int(cfg["local_proxy_port"])}],
+                "outbounds": [dict(ls["outbound"], tag="server")],
+                "route": {"final": "server", "default_domain_resolver": "doh"}}
+        path = os.path.join(routing.route_dir(data), "server-proxy.json")
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(conf, f)
+        return [routing.sing_box_path(data), "run", "-c", path, "--disable-color"]
+
     def _tunnel(self) -> None:
         while self.running:
             cfg = self.cfg
-            if not cfg["server"]:
+            if not has_server(cfg) or not cfg.get("server_enabled", True):
                 time.sleep(1)
+                continue
+            if cfg.get("server_mode") == "link":
+                try:
+                    cmd = self._link_proxy_cmd(cfg)
+                except Exception as e:  # noqa: BLE001 — e.g. sing-box could not be downloaded
+                    log(f"link proxy: {e!r}")
+                    cmd = None
+                if not cmd:
+                    time.sleep(cfg["reconnect_delay"])
+                    continue
+                self._run_tunnel(cmd, cfg)
                 continue
             cmd = ssh_args(cfg) + ["-N", "-o", "ExitOnForwardFailure=yes", "-o", "ServerAliveInterval=15",
                                    "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=15",
                                    "-L", f"127.0.0.1:{cfg['local_proxy_port']}:127.0.0.1:{cfg['remote_proxy_port']}",
                                    cfg["server"]]
+            self._run_tunnel(cmd, cfg)
+
+    def _run_tunnel(self, cmd: list[str], cfg: dict) -> None:
+        """Run ssh -L or the link proxy until it exits; then wait a little before the next try."""
+        if True:
             try:
                 self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                              stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
             except FileNotFoundError:
-                log(f"ssh not found: {cfg['ssh_exe']}")
+                log(f"not found: {cmd[0]}")
                 time.sleep(cfg["reconnect_delay"])
-                continue
+                return
             for _ in range(40):
                 if self.proc.poll() is not None or port_open(cfg["local_proxy_port"]):
                     break
@@ -682,7 +1293,7 @@ class Engine:
         return bool(self.proc and self.proc.poll() is None and port_open(self.cfg["local_proxy_port"]))
 
     def check_url(self) -> str:
-        return next((p["check_url"] for p in enabled_profiles(self.cfg) if p["check_url"]), FALLBACK_CHECK)
+        return next((p["check_url"] for p in pac_profiles(self.cfg) if p["check_url"]), FALLBACK_CHECK)
 
     def _exit_checker(self) -> None:
         while self.running:
@@ -698,7 +1309,7 @@ class Engine:
                 self.state["checking"] = True
             try:
                 ip, loc, ms = check_exit(self.cfg["local_proxy_port"], self.check_url())
-                ok = ip == self.ip
+                ok = ip == self.ip or self.cfg.get("server_mode") == "link"
             except Exception as e:  # noqa: BLE001 — any error means the exit does not work
                 ip, loc, ms, ok = type(e).__name__, None, None, False
             with self.lock:
@@ -710,7 +1321,7 @@ class Engine:
             return
         targets = {}
         for p in list(self.cfg["profiles"]):
-            if not p["apps"]:
+            if not p["apps"] or p.get("target", "server") != "server":
                 continue
             nets = [ipaddress.ip_network(n) for n in p["nets"]]
             targets[p["id"]] = (resolve_ips(p["domains"]), nets)
@@ -729,9 +1340,9 @@ class Engine:
         with self.cfg_lock:
             current = _reg_get(INET_KEY, "AutoConfigURL")
             # someone else's PAC (not a reset) is kept as the one to restore later
-            if current and current != pac_url(self.cfg):
+            if current and not is_our_pac(current, self.cfg):
                 self.cfg["prev_autoconfig"] = current
-            _reg_set(INET_KEY, "AutoConfigURL", pac_url(self.cfg))
+            _reg_set(INET_KEY, "AutoConfigURL", fresh_pac_url(self.cfg))
             _notify_inet_changed()
             self.save()
         log(f"Windows proxy settings were reset (was: {current!r}) — PAC restored")
@@ -741,12 +1352,17 @@ class Engine:
         while self.running:
             self._refresh_targets()
             with self.cfg_lock:
-                cfg = json.loads(json.dumps(self.cfg))
+                light = {k: v for k, v in self.cfg.items() if k not in ("servers", "server_checks", "subscriptions")}
+                cfg = json.loads(json.dumps(light))
             apps = scan(cfg, self.targets)
-            vpn = vpn_adapter(cfg["vpn_adapter"])
+            if cfg.get("vpn_source") == "servers":
+                # the VPN is XmelTunnel's own client: it is «on» while the routing mode runs
+                vpn = tr("built-in client") if self.state["route"]["status"] == "running" else None
+            else:
+                vpn = vpn_adapter(cfg["vpn_adapter"])
             up = self.tunnel_up()
             pac = pac_installed(cfg)
-            if not pac and enabled_profiles(cfg):
+            if not pac and pac_profiles(cfg) and cfg.get("server_enabled", True):
                 pac = self._restore_pac()
             with self.lock:
                 self.state.update(vpn=vpn, tunnel=up, apps=apps, pac=pac)
