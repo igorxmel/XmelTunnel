@@ -15,6 +15,7 @@ from xmeltunnel.ui import theme, app as A
 lang, scenario, out = sys.argv[1], sys.argv[2], sys.argv[3]
 i18n.set_language(lang)
 qa = QApplication(sys.argv)
+qa.setStyle("Fusion")
 theme.apply(_os.environ.get("XT_LIGHT") == "1"); qa.setStyleSheet(theme.stylesheet())
 cfg = json.loads(json.dumps(core.DEFAULTS))
 cfg["server"] = "" if scenario == "setup" else "root@203.0.113.7"

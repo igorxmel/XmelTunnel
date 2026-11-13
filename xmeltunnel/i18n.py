@@ -483,8 +483,6 @@ RU = {
     "comes out. Not a knock on the port.":
         "Настоящий запрос через каждый показанный сервер: пинг — сколько он занял, реальный выход — где трафик "
         "выходит в интернет. Не просто стук в порт.",
-    "Median of 3 real requests through the server. Click to sort.":
-        "Середина из 3 настоящих запросов через сервер. Нажмите, чтобы отсортировать.",
     "the fastest in {country}": "самый быстрый ({country})",
     "the fastest of {n}": "самый быстрый из {n}",
     "Automatically: {where}": "Автоматически: {where}",
@@ -643,4 +641,28 @@ RU = {
     "Version {v} is available.": "Доступна версия {v}.",
     "This is the latest version.": "Это последняя версия.",
     "Not checked yet.": "Ещё не проверялось.",
+    # batch 7
+    "disconnected by you": "отключён вами",
+    "waits for the VPN": "ждёт VPN",
+    "off while the server is disconnected": "выключен, пока сервер отключён",
+    "Profiles are applied": "Профили применяются",
+    "Your VPN client is on": "Ваш VPN-клиент включён",
+    "Your VPN client is off": "Ваш VPN-клиент выключен",
+    "XmelTunnel does not touch its traffic now. Apply the profiles to send games direct, chosen sites through your "
+    "server and so on, on top of that client.":
+        "XmelTunnel сейчас не трогает его трафик. Примените профили, чтобы поверх этого клиента игры шли напрямую, "
+        "выбранные сайты — через ваш сервер и так далее.",
+    "Apply profiles": "Применить профили",
+    "Stop applying profiles": "Перестать применять",
+    "Empty profile": "Пустой профиль",
+    "Check the ping by itself when this window opens": "Проверять пинг сам при открытии этого окна",
+    "Reach subscription servers through another VPN client": "Подключаться к серверам подписки через другой VPN-клиент",
+    "Only if the subscription's servers are blocked where you are: XmelTunnel then connects to them through Happ, "
+    "Throne or another VPN client that is running.":
+        "Только если серверы подписки у вас заблокированы: тогда XmelTunnel подключается к ним через запущенный Happ, "
+        "Throne или другой VPN-клиент.",
+    "Traffic through this server while XmelTunnel's VPN used it.":
+        "Трафик через этот сервер, пока его использовал VPN XmelTunnel.",
+    "Median of 3 real requests through the server. Click to sort.":
+        "Задержка по встроенной проверке sing-box — как в Throne и других клиентах на sing-box. Нажмите, чтобы отсортировать.",
 }

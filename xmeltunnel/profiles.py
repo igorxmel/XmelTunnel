@@ -134,7 +134,7 @@ PRESETS = [
     },
     {
         "id": "custom",
-        "name": "My sites",
+        "name": "Empty profile",
         "domains": [],
         "nets": [],
         "check_url": "",

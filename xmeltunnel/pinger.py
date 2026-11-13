@@ -1,6 +1,7 @@
 """Honest server check: a real request through every server, not a knock on its port.
 
-Many clients "ping" a server by opening a TCP connection to its port. That says nothing about whether
+The latency is sing-box's own URL test (clash API), the number Throne and other sing-box clients show;
+many other clients only "ping" a server by opening a TCP connection to its port. That says nothing about whether
 the proxy behind it works (a blocked or misconfigured server still accepts TCP), so results look random.
 Here a separate sing-box (no admin rights, no TUN) gives every server its own local proxy port, and
 each server gets:
@@ -17,6 +18,7 @@ import socket
 import statistics
 import subprocess
 import time
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
@@ -45,7 +47,7 @@ def _free_base(count: int) -> int:
     raise RuntimeError("no free local ports")
 
 
-def build_config(servers: list[dict], base: int, phys: str | None) -> dict:
+def build_config(servers: list[dict], base: int, phys: str | None, api_port: int = 0) -> dict:
     inbounds, outbounds, rules = [], [], []
     dial = {"bind_interface": phys} if phys else {}
     for i, s in enumerate(servers):
@@ -62,6 +64,8 @@ def build_config(servers: list[dict], base: int, phys: str | None) -> dict:
         "inbounds": inbounds,
         "outbounds": outbounds,
         "route": {"rules": rules, "final": "direct", "default_domain_resolver": "doh"},
+        # sing-box's own URL test (the one Throne, Hiddify and other sing-box clients show) answers here
+        **({"experimental": {"clash_api": {"external_controller": f"127.0.0.1:{api_port}"}}} if api_port else {}),
     }
 
 
@@ -70,20 +74,34 @@ def _opener(port: int):
     return urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
 
 
-def _check_one(port: int) -> dict:
+def _delay(api_port: int, tag: str) -> int:
+    """sing-box's URL test of one outbound, in ms: the same number sing-box clients (Throne…) show."""
+    q = urllib.parse.urlencode({"url": LATENCY_URL, "timeout": TIMEOUT * 1000})
+    req = urllib.request.Request(f"http://127.0.0.1:{api_port}/proxies/{tag}/delay?{q}")
+    no_proxy = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with no_proxy.open(req, timeout=TIMEOUT + 3) as r:
+        return int(json.loads(r.read().decode())["delay"])
+
+
+def _check_one(port: int, api_port: int = 0, tag: str = "") -> dict:
     opener = _opener(port)
     times, error = [], ""
-    for _ in range(SAMPLES):
-        t = time.perf_counter()
+    for _ in range(SAMPLES if not api_port else 2):
         try:
-            with opener.open(LATENCY_URL, timeout=TIMEOUT) as r:
-                r.read(64)
-            times.append((time.perf_counter() - t) * 1000)
+            if api_port:
+                times.append(_delay(api_port, tag))  # sing-box measures it, like other clients do
+            else:
+                t = time.perf_counter()
+                with opener.open(LATENCY_URL, timeout=TIMEOUT) as r:
+                    r.read(64)
+                times.append((time.perf_counter() - t) * 1000)
         except Exception as e:  # noqa: BLE001 — any failure is a result here
             error = _short(e)
             if not times:
-                break  # the first one failed: the server does not work, no need to wait for two more
-    out = {"ms": int(statistics.median(times)) if times else None, "ok": len(times), "of": SAMPLES,
+                break  # the first one failed: the server does not work, no need to wait for more
+    # with the URL test the second try is the fair one: the first includes setting the connection up
+    ms = (min(times) if api_port else statistics.median(times)) if times else None
+    out = {"ms": int(ms) if ms is not None else None, "ok": len(times), "of": SAMPLES if not api_port else 2,
            "error": "" if times else error, "exit_ip": "", "exit_loc": "", "at": time.time()}
     if times:
         try:
@@ -99,7 +117,8 @@ def _short(e: Exception) -> str:
     text = str(getattr(e, "reason", "") or e) or type(e).__name__
     for key, nice in (("timed out", "timeout"), ("10061", "refused"), ("10054", "reset"), ("10060", "timeout"),
                       ("Remote end closed", "closed"), ("EOF", "closed"), ("Bad Gateway", "no connection"),
-                      ("502", "no connection")):
+                      ("502", "no connection"), ("Service Unavailable", "no answer"),
+                      ("Gateway Timeout", "timeout")):
         if key in text:
             return nice
     return text[:60]
@@ -110,11 +129,12 @@ def check(data: str, servers: list[dict], phys: str | None, progress=None, stop=
     if not servers:
         return {}
     routing.download_sing_box(data)
-    base = _free_base(len(servers))
+    base = _free_base(len(servers) + 1)
+    api_port = base + len(servers)
     folder = routing.route_dir(data)
     conf = os.path.join(folder, "ping.json")
     with open(conf, "w", encoding="utf-8") as f:
-        json.dump(build_config(servers, base, phys), f)
+        json.dump(build_config(servers, base, phys, api_port), f)
     log = os.path.join(folder, "ping.log")
     proc = subprocess.Popen([routing.sing_box_path(data), "run", "-c", conf, "--disable-color"],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w", encoding="utf-8"),
@@ -136,7 +156,7 @@ def check(data: str, servers: list[dict], phys: str | None, progress=None, stop=
         def work(i: int) -> None:
             if stop is not None and stop.is_set():
                 return
-            results[servers[i]["id"]] = _check_one(base + i)
+            results[servers[i]["id"]] = _check_one(base + i, api_port, f"s-{i}")
             done[0] += 1
             if progress:
                 progress(done[0], len(servers))

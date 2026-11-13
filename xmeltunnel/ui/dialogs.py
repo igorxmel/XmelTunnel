@@ -8,7 +8,7 @@ import re
 from PyQt6.QtCore import QObject, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QCursor
 from PyQt6.QtWidgets import (QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMenu,
-                             QFrame, QPlainTextEdit, QPushButton, QTabWidget, QVBoxLayout, QWidget)
+                             QFrame, QPlainTextEdit, QPushButton, QScrollArea, QTabWidget, QVBoxLayout, QWidget)
 
 from xmeltunnel import core, i18n, profiles, routing, server_setup
 from xmeltunnel.i18n import tr
@@ -64,8 +64,8 @@ class SettingsPanel(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(10)
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._server_page(cfg), tr("Server"))
-        self.tabs.addTab(self._app_page(cfg), tr("App"))
+        self.tabs.addTab(self._scrolled(self._server_page(cfg)), tr("Server"))
+        self.tabs.addTab(self._scrolled(self._app_page(cfg)), tr("App"))
         lay.addWidget(self.tabs, 1)
 
         self.msg = QLabel(objectName="dim")
@@ -86,6 +86,17 @@ class SettingsPanel(QWidget):
         row.addWidget(cancel)
         row.addWidget(ok)
         lay.addLayout(row)
+
+    @staticmethod
+    def _scrolled(page: QWidget) -> QWidget:
+        """Fields keep their height; a short window scrolls instead of squashing them."""
+        area = QScrollArea()
+        area.setWidgetResizable(True)
+        area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        area.setFrameShape(QFrame.Shape.NoFrame)
+        area.setStyleSheet("QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; }")
+        area.setWidget(page)
+        return area
 
     def _server_page(self, cfg: dict) -> QWidget:
         page = QWidget()
@@ -211,6 +222,15 @@ class SettingsPanel(QWidget):
                              "the VPN adapter and warns you when the VPN is off."), objectName="note")
         vpn_note.setWordWrap(True)
         grid2.addWidget(vpn_note, r, 1)
+        r += 1
+        self.via = QCheckBox(tr("Reach subscription servers through another VPN client"))
+        self.via.setChecked(bool(cfg.get("servers_via_adapter")))
+        grid2.addWidget(self.via, r, 1)
+        r += 1
+        via_note = QLabel(tr("Only if the subscription's servers are blocked where you are: XmelTunnel then connects to "
+                             "them through Happ, Throne or another VPN client that is running."), objectName="note")
+        via_note.setWordWrap(True)
+        grid2.addWidget(via_note, r, 1)
         grid2.setColumnStretch(1, 1)
         lay.addLayout(grid2)
         self.show_ss_state()
@@ -330,7 +350,7 @@ class SettingsPanel(QWidget):
             self.remove_requested.emit()
 
     def collect(self) -> dict | None:
-        common = dict(require_vpn=self.vpn.isChecked(),
+        common = dict(require_vpn=self.vpn.isChecked(), servers_via_adapter=self.via.isChecked(),
                       vpn_adapter=self.vpn_rx.currentData() or core.DEFAULTS["vpn_adapter"])
         if self.link_mode():
             from xmeltunnel import servers as sv
@@ -542,7 +562,11 @@ class ProfileDialog(FramelessDialog):
 
     def load_preset(self) -> None:
         self.profile = profiles.normalize(profiles.preset(self.preset.currentData()))
-        if self.profile["id"] in ("custom", "blocked"):
+        if self.profile["target"] == "server" and not core.has_server(self.engine.cfg):
+            self.profile["target"] = "vpn"  # no server of your own: «through your server» would just not work
+        if self.profile["id"] == "custom":
+            self.profile["name"] = tr("New profile")
+        elif self.profile["id"] == "blocked":
             self.profile["name"] = tr(self.profile["name"])
         self.show_profile()
 

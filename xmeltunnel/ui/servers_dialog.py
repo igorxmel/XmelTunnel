@@ -15,7 +15,7 @@ from xmeltunnel.ui import theme
 from xmeltunnel.ui.frameless import FramelessDialog, confirm
 from xmeltunnel.ui.widgets import country_name, flag_pixmap
 
-COLS = ("", "Country", "Name", "Protocol", "Ping", "Real exit", "Subscription")
+COLS = ("", "Country", "Name", "Protocol", "Ping", "Traffic", "Real exit", "Subscription")
 RECHECK_AFTER = 30 * 60  # opening the window re-checks servers whose ping is older than this
 
 
@@ -40,6 +40,14 @@ def ping_text(chk: dict | None) -> tuple[str, str, tuple]:
     level = "ok" if ms < 200 else "warn" if ms < 500 else "down"
     lossy = f" · {chk['ok']}/{chk['of']}" if chk.get("ok", 0) < chk.get("of", 0) else ""
     return f"{ms} {tr('ms')}{lossy}", level, (0, ms)
+
+
+def fmt_traffic(n: int) -> str:
+    if not n:
+        return "—"
+    from xmeltunnel.sharing import fmt_bytes
+
+    return fmt_bytes(n)
 
 
 def ago_short(ts: float) -> str:
@@ -116,6 +124,7 @@ class ServersDialog(FramelessDialog):
 
         self.table = QTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels([tr(c) if c else "" for c in COLS])
+        self.table.horizontalHeaderItem(5).setToolTip(tr("Traffic through this server while XmelTunnel's VPN used it."))
         self.table.horizontalHeaderItem(4).setToolTip(tr("Median of 3 real requests through the server. Click to sort."))
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -134,12 +143,10 @@ class ServersDialog(FramelessDialog):
         self.table.doubleClicked.connect(lambda _: self.on_use())
         lay.addWidget(self.table, 1)
 
-        self.via = QCheckBox(tr("Connect through my VPN client"))
-        self.via.setToolTip(tr("Turn on if these servers are blocked where you are: XmelTunnel will reach them "
-                               "through Happ, v2rayN or another VPN client that is running."))
-        self.via.setChecked(bool(engine.cfg.get("servers_via_adapter")))
-        self.via.toggled.connect(self.on_via)
-        lay.addWidget(self.via)
+        self.ping_auto = QCheckBox(tr("Check the ping by itself when this window opens"))
+        self.ping_auto.setChecked(bool(engine.cfg.get("ping_auto", True)))
+        self.ping_auto.toggled.connect(self.on_ping_auto)
+        lay.addWidget(self.ping_auto)
         self.status = QLabel(objectName="note")
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
@@ -168,7 +175,9 @@ class ServersDialog(FramelessDialog):
         QTimer.singleShot(400, self.auto_check)
 
     def auto_check(self) -> None:
-        """Check the shown servers by itself if their ping is missing or old: nobody should have to guess."""
+        """Check the shown servers by itself if their ping is missing or old (unless turned off)."""
+        if not self.engine.cfg.get("ping_auto", True):
+            return
         checks = self._checks()
         stale = [s["id"] for s in self.visible()
                  if time.time() - (checks.get(s["id"]) or {}).get("at", 0) > RECHECK_AFTER]
@@ -222,6 +231,7 @@ class ServersDialog(FramelessDialog):
 
         subs = {s["id"]: (s.get("title") or s["url"]) for s in cfg.get("subscriptions") or []}
         checks = self._checks()
+        traffic = dict(cfg.get("traffic") or {})
         pick = cfg.get("vpn_server") or "auto"
         rows = self.visible()
         self.table.setUpdatesEnabled(False)
@@ -239,15 +249,16 @@ class ServersDialog(FramelessDialog):
                 SortItem(servers.display_name(s["name"]), s["name"].lower()),
                 SortItem(servers.PROTOCOLS.get(s["protocol"], s["protocol"]), s["protocol"]),
                 SortItem(text, key),
+                SortItem(fmt_traffic(traffic.get("srv:" + s["id"], 0)), -traffic.get("srv:" + s["id"], 0)),
                 SortItem(f"{exit_loc} · {(chk or {}).get('exit_ip', '')}" if exit_loc else "—", exit_loc or "~"),
                 SortItem(subs.get(s.get("sub"), tr("added by hand")), s.get("sub") or "~"),
             ]
             if cc:
                 cells[1].setIcon(self._flag(cc))
             if exit_loc:
-                cells[5].setIcon(self._flag(exit_loc))
+                cells[6].setIcon(self._flag(exit_loc))
                 if cc and exit_loc != cc:
-                    cells[5].setToolTip(tr("The name says {a}, but traffic really exits in {b}.",
+                    cells[6].setToolTip(tr("The name says {a}, but traffic really exits in {b}.",
                                            a=country_name(cc), b=country_name(exit_loc)))
             cells[4].setForeground(QColor(theme.level_color(level)))
             if chk and chk.get("error"):
@@ -357,10 +368,10 @@ class ServersDialog(FramelessDialog):
                 ids.append(sid)
         return ids
 
-    def on_via(self, on: bool) -> None:
+    def on_ping_auto(self, on: bool) -> None:
         with self.engine.cfg_lock:
-            self.engine.cfg["servers_via_adapter"] = on
-            self.engine._servers_changed()
+            self.engine.cfg["ping_auto"] = on
+            self.engine.save()
 
     def on_use(self) -> None:
         ids = self._selected_ids()

@@ -3,5 +3,5 @@
 Copyright (C) 2026 igorxmel. Licensed under the GNU GPL v3 or later, see LICENSE.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 APP_NAME = "XmelTunnel"

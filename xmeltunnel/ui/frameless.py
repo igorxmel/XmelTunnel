@@ -50,6 +50,12 @@ if WINDOWS:
         get, put = _long_funcs()
         put(handle, GWL_STYLE, get(handle, GWL_STYLE) | WS_CAPTION | WS_THICKFRAME | WS_MAXIMIZEBOX | WS_MINIMIZEBOX)
         ctypes.windll.user32.SetWindowPos(handle, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED)
+        # Windows 11: rounded corners like native windows (Windows 10 ignores the request)
+        try:
+            pref = ctypes.c_int(2)  # DWMWCP_ROUND
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(handle, 33, ctypes.byref(pref), ctypes.sizeof(pref))
+        except Exception:  # noqa: BLE001
+            pass
 
     def frame_border() -> int:
         m = ctypes.windll.user32.GetSystemMetrics

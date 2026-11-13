@@ -34,6 +34,7 @@ TUN_NAME = "XmelTunnel"  # the adapter name Windows (and other VPN-aware apps) s
 TUN_ADDRESS = "172.31.250.1/30"  # not sing-box's default 172.19.0.1: other VPN clients often take that one
 TUN_ADDRESS6 = "fdfe:dcba:9876::1/126"
 CHECK_PORTS = {"direct": 28891, "vpn": 28892, "server": 28893}
+STATS_PORT = 28890  # sing-box's clash API, local only: live connections with their bytes (traffic statistics)
 SS_METHOD = "2022-blake3-aes-128-gcm"
 DOH_SERVER = "1.1.1.1"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -274,6 +275,7 @@ def build_config(cfg: dict, server_ip: str, phys: str, vpn: str | None) -> dict:
         "inbounds": inbounds,
         "outbounds": outbounds,
         "route": {"rules": rules, "final": default, "default_domain_resolver": "dns-local"},
+        "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{STATS_PORT}"}},
     }
 
 
@@ -678,7 +680,8 @@ def check_path(name: str, timeout: int = 15) -> tuple[str, str]:
 def last_log_error(data: str) -> str:
     try:
         with open(log_file(data), encoding="utf-8", errors="replace") as f:
-            lines = [ln.strip() for ln in f.readlines()[-30:] if "FATAL" in ln or "ERROR" in ln]
+            # only a start failure (FATAL): «ERROR … i/o timeout» lines are ordinary sites not answering
+            lines = [ln.strip() for ln in f.readlines()[-60:] if "FATAL" in ln]
         return lines[-1][-200:] if lines else ""
     except OSError:
         return ""

@@ -65,6 +65,8 @@ DEFAULTS = {
     "subscriptions": [],                # {id, url, title, updated_at, count, error, info}
     "server_checks": {},                # server id -> last check result
     "servers_via_adapter": False,       # reach these servers through the VPN client's adapter
+    "ping_auto": True,
+    "traffic": {},                      # bytes per path ("direct", "vpn", "server") and per server ("srv:<id>")                  # the servers window checks stale pings when it opens
     "sharing_used": False,              # friends have access to your server: check their limits now and then
     "check_updates": True,
     # app
@@ -829,7 +831,8 @@ class Engine:
             self.apply_profiles(refresh_pac=True)  # apps may have fallen back to direct while we were closed  # restore PAC / Claude Code settings if something reset them
         PacHandler.body = pac_text(self.cfg).encode()
         for target in (self._serve_pac, self._tunnel, self._exit_checker, self._monitor, self._route_checker,
-                       self._update_checker, self._subscription_updater):
+                       self._update_checker, self._subscription_updater,
+                       self._traffic_counter):
             threading.Thread(target=logged(target), daemon=True).start()
         if routing.helper_alive(data_dir()) or (self.cfg["route_enabled"] and self.cfg["route_on_start"]):
             self._route_bg(self._route_start)  # take over a running helper or start as the user left it
@@ -919,6 +922,58 @@ class Engine:
                 if not self.running:
                     return
                 time.sleep(1)
+
+    def _traffic_counter(self) -> None:
+        """Bytes per path and per server, from sing-box's live connections (clash API), every 5 s.
+        Each connection's growth since the last look is added, so closed ones are counted up to then."""
+        import urllib.request
+
+        seen: dict[str, int] = {}
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        saved_at = time.time()
+        while self.running:
+            time.sleep(5)
+            if self.state["route"]["status"] != "running":
+                seen.clear()
+                continue
+            try:
+                with opener.open(f"http://127.0.0.1:{routing.STATS_PORT}/connections", timeout=4) as r:
+                    conns = json.loads(r.read().decode()).get("connections") or []
+            except Exception:  # noqa: BLE001 — sing-box restarting: next round
+                continue
+            add: dict[str, int] = {}
+            alive = {}
+            pick = self.cfg.get("vpn_server") or "auto"
+            for c in conns:
+                cid, total = c.get("id", ""), int(c.get("upload", 0)) + int(c.get("download", 0))
+                alive[cid] = total
+                delta = total - seen.get(cid, 0)
+                if delta <= 0:
+                    continue
+                chain = c.get("chains") or []
+                first = chain[0] if chain else ""
+                if first.startswith("srv-") or "vpn" in chain:
+                    add["vpn"] = add.get("vpn", 0) + delta
+                    sid = first[4:] if first.startswith("srv-") else (pick if not pick.startswith("auto") else "")
+                    if sid and self.cfg.get("vpn_source") == "servers":
+                        add["srv:" + sid] = add.get("srv:" + sid, 0) + delta
+                elif first in ("direct", "server"):
+                    add[first] = add.get(first, 0) + delta
+            seen = alive
+            if add:
+                with self.cfg_lock:
+                    t = dict(self.cfg.get("traffic") or {})
+                    for k, v in add.items():
+                        t[k] = t.get(k, 0) + v
+                    self.cfg["traffic"] = t
+                    if time.time() - saved_at > 60:
+                        self.save()
+                        saved_at = time.time()
+
+    def reset_traffic(self) -> None:
+        with self.cfg_lock:
+            self.cfg["traffic"] = {}
+            self.save()
 
     def remove_subscription(self, sid: str) -> None:
         with self.cfg_lock:
@@ -1146,6 +1201,10 @@ class Engine:
                 if st.get("status") == "stopped" or (st.get("status") == "running" and st.get("at", 0) > t0):
                     break
         st = routing.read_state(data)
+        if st.get("status") in ("starting", "restarting") and routing.helper_alive(data):
+            # slower than we waited, but still going: not a failure; the checker sees it come up
+            log("routing: still starting, waiting for the helper")
+            return self._route_set(status="restarting", error="")
         if st.get("status") == "running" and routing.helper_alive(data):
             log(f"routing: on (direct={phys}, vpn={vpn})")
             self._route_set(status="running", error="", checks={})

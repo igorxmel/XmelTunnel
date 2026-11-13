@@ -68,9 +68,28 @@ def arrow_icon(color: str) -> str:
     return path.replace("\\", "/")
 
 
+def check_icon(color: str) -> str:
+    """A tick for checked boxes, as an SVG file (QSS takes a path)."""
+    import os
+    import tempfile
+
+    svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 12 12">'
+           f'<path d="M2.5 6.3 L5 8.8 L9.6 3.6" fill="none" stroke="{color}" stroke-width="1.8" '
+           f'stroke-linecap="round" stroke-linejoin="round"/></svg>')
+    path = os.path.join(tempfile.gettempdir(), f"xmeltunnel-check-{color.lstrip('#')}.svg")
+    if not os.path.exists(path):
+        try:
+            with open(path, "w", encoding="ascii") as f:
+                f.write(svg)
+        except OSError:
+            return ""
+    return path.replace("\\", "/")
+
+
 def stylesheet() -> str:
     c = C
     arrow = arrow_icon(c['text_dim'])
+    check = check_icon(c['text_inverted'])
     return f"""
 * {{ font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif; font-size: 10pt; color: {c['text']}; }}
 QWidget#page, QDialog {{ background: {c['bg']}; }}
@@ -165,7 +184,15 @@ QComboBox::down-arrow {{ image: url({arrow}); width: 10px; height: 10px; }}
 QComboBox::down-arrow:on {{ top: 1px; }}
 QComboBox:hover {{ border-color: {c['text_muted']}; }}
 QComboBox QAbstractItemView {{ background: {c['elevated']}; border: 1px solid {c['border_strong']}; selection-background-color: {c['surface_hover']}; }}
-QCheckBox {{ spacing: 8px; }}
+QCheckBox {{ spacing: 9px; }}
+QCheckBox::indicator {{ width: 16px; height: 16px; border: 1px solid {c['border_strong']}; border-radius: 5px;
+                       background: {c['surface']}; }}
+QCheckBox::indicator:hover {{ border-color: {c['text_muted']}; }}
+QCheckBox::indicator:checked {{ background: {c['accent']}; border-color: {c['accent']}; image: url({check}); }}
+QCheckBox::indicator:disabled {{ background: {c['bar']}; border-color: {c['border']}; }}
+QComboBox QAbstractItemView {{ padding: 4px; outline: 0; border-radius: 8px; }}
+QComboBox QAbstractItemView::item {{ min-height: 26px; padding: 2px 8px; border-radius: 5px; }}
+QComboBox QAbstractItemView::item:selected {{ background: {c['surface_hover']}; color: {c['text']}; }}
 QTableWidget, QListWidget {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 6px;
                             selection-background-color: {c['surface_hover']}; selection-color: {c['text']};
                             outline: none; }}

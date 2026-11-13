@@ -312,7 +312,7 @@ class VpnCard(QFrame):
         ms = f"  ·  {chk['ms']} " + tr("ms") if chk.get("ms") else ""
         return display_name(s["name"]) + ms, s.get("country") or chk.get("exit_loc", "")
 
-    def update_from(self, cfg: dict, r: dict) -> None:
+    def update_from(self, cfg: dict, r: dict, adapter: str | None = None) -> None:
         source = cfg.get("vpn_source", "adapter")
         for key, b in self.seg.items():
             b.setChecked(key == source)
@@ -324,15 +324,17 @@ class VpnCard(QFrame):
             self.picker.setIcon(QIcon(flag_pixmap(cc, 18, 13)) if cc else QIcon())
             self.server_line.setText("")
         else:
-            self.server_line.setText(tr("Adapter: {name}", name=r["vpn"]) if r.get("vpn") else
+            self.server_line.setText(tr("Adapter: {name}", name=adapter) if adapter else
                                      tr("No VPN client adapter found — turn your VPN client on."))
         self.server_line.setVisible(not builtin)
         status = r["status"]
         checks = r["checks"]
         failed = [k for k, v in checks.items() if v and v[1] is None]
+        external = cfg.get("vpn_source", "adapter") != "servers"
         if status == "running":
             level = "ok" if checks and not failed else ("down" if checks and len(failed) == len(checks) else "warn")
-            title = tr("VPN is connected") if not failed else tr("Connected, but not every path answers")
+            title = (tr("Profiles are applied") if external else tr("VPN is connected")) if not failed \
+                else tr("Connected, but not every path answers")
             where = {"direct": tr("direct"), "vpn": tr("through the VPN"),
                      "server": tr("through your server")}[cfg.get("route_default", "direct")]
             text = tr("Profiles decide, everything else goes {where}.", where=where)
@@ -343,6 +345,14 @@ class VpnCard(QFrame):
                     "starting": tr("Starting… confirm the admin rights request")}[status]
         elif status == "error":
             level, title, text = "down", tr("The VPN did not connect"), r["error"]
+        elif external:
+            # the VPN itself is the other client's business; here only «apply the profiles on top of it» is off
+            vpn_on = bool(adapter)  # the VPN client's adapter, as the monitor sees it right now
+            level = "ok" if vpn_on else "unknown"
+            title = tr("Your VPN client is on") if vpn_on else tr("Your VPN client is off")
+            text = (r["error"] + " " if r["error"] else "") + tr(
+                "XmelTunnel does not touch its traffic now. Apply the profiles to send games direct, chosen sites "
+                "through your server and so on, on top of that client.")
         else:
             level, title = "unknown", tr("VPN is disconnected")
             text = (r["error"] + " " if r["error"] else "") + tr(
@@ -355,7 +365,10 @@ class VpnCard(QFrame):
         self.sub.setObjectName("error" if status == "error" else "note")
         self.sub.style().unpolish(self.sub)
         self.sub.style().polish(self.sub)
-        self.b_connect.setText(tr("Disconnect") if cfg["route_enabled"] else tr("Connect"))
+        if external:
+            self.b_connect.setText(tr("Stop applying profiles") if cfg["route_enabled"] else tr("Apply profiles"))
+        else:
+            self.b_connect.setText(tr("Disconnect") if cfg["route_enabled"] else tr("Connect"))
         self.b_connect.setObjectName("" if cfg["route_enabled"] else "primary")
         self.b_connect.style().unpolish(self.b_connect)
         self.b_connect.style().polish(self.b_connect)
@@ -371,6 +384,11 @@ class VpnCard(QFrame):
                 pill.set_state(tr("not installed"), "unknown")
             else:
                 text, lvl, flag = route_path_text(checks.get(key))
+                used = (cfg.get("traffic") or {}).get(key, 0)
+                if used:
+                    from xmeltunnel.sharing import fmt_bytes
+
+                    text += f"  ·  {fmt_bytes(used)}"
                 pill.set_state(text, lvl, flag)
 
 
@@ -753,8 +771,13 @@ class MainWindow(FramelessWindow):
         self.kv["vpn"].setVisible(cfg["require_vpn"])
         self.kv["vpn"].set(tr("on ({name})", name=s["vpn"]) if s["vpn"] else tr("not found — turn your VPN on"),
                            "ok" if s["vpn"] else "down")
+        keys = {k for k, _ in problems}
         if setup:
             self.kv["tunnel"].set("—", "unknown")
+        elif not cfg.get("server_enabled", True):
+            self.kv["tunnel"].set(tr("disconnected by you"), "unknown")
+        elif "vpn" in keys:
+            self.kv["tunnel"].set(tr("waits for the VPN"), "warn")
         else:
             self.kv["tunnel"].set(tr("connected") if s["tunnel"] else tr("no connection, retrying…"),
                                   "ok" if s["tunnel"] else "down")
@@ -766,7 +789,9 @@ class MainWindow(FramelessWindow):
             self.kv["proxy"].set(tr("answers on :{port}", port=cfg["remote_proxy_port"]), "ok")
         else:
             self.kv["proxy"].set(tr("error: {err}", err=s["exit_ip"]), "down")
-        if not core.pac_profiles(cfg):
+        if not cfg.get("server_enabled", True):
+            self.kv["pac"].set(tr("off while the server is disconnected"), "unknown")
+        elif not core.pac_profiles(cfg):
             self.kv["pac"].set(tr("no profiles on"), "unknown")
         elif not s["pac"]:
             self.kv["pac"].set(tr("off in Windows"), "warn")
@@ -774,7 +799,7 @@ class MainWindow(FramelessWindow):
             up = core.port_open(cfg["pac_port"])
             self.kv["pac"].set(tr("served on :{port}", port=cfg["pac_port"]) if up else tr("port does not answer"),
                                "ok" if up else "down")
-        self.route.update_from(cfg, s["route"])
+        self.route.update_from(cfg, s["route"], s["vpn"])
 
         for p in cfg["profiles"]:
             if p["id"] in self.rows:
@@ -961,6 +986,8 @@ def main() -> int:
     if "--uninstall" not in sys.argv:
         apply_ui_scale()
     app = QApplication(sys.argv)
+    # One look on Windows 10 and 11: the native style draws check boxes and drop-down lists the old way on 10
+    app.setStyle("Fusion")
     install_excepthook()
     app.setApplicationName(APP_NAME)
     app.setQuitOnLastWindowClosed(False)
