@@ -62,7 +62,7 @@ def test_parse_text_base64_blob_and_dupes():
     blob = base64.b64encode(links.encode()).decode()
     got, errors = servers.parse_text(blob, sub="s1")
     assert [s["name"] for s in got] == ["A", "B"] and all(s["sub"] == "s1" for s in got)
-    assert errors == []
+    assert len(errors) == 1 and "no server address" in errors[0]  # WireGuard is understood now; this one is broken
 
 
 def test_parse_text_reports_garbage():

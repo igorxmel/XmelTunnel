@@ -29,6 +29,8 @@ SING_BOX_URL = (f"https://github.com/SagerNet/sing-box/releases/download/v{SING_
                 f"sing-box-{SING_BOX_VERSION}-windows-amd64.zip")
 SING_BOX_ZIP_SHA256 = "99185d75d314a07dbba4a130c8ad986cbeb629a07927975636b341ca61f991df"
 SING_BOX_EXE_SHA256 = "8f30682ee198855440d2a7fe070d5d3653793b2d01bb8c85eea88f93bbe7c8b9"
+# NaiveProxy servers need Chromium's network stack; it comes in the same official archive
+CRONET_SHA256 = "3217c6260fbca5f16072e0b79735742f40109a63bb0ff88fd6b96dd6b54a2928"
 
 TUN_NAME = "XmelTunnel"  # the adapter name Windows (and other VPN-aware apps) show
 TUN_ADDRESS = "172.31.250.1/30"  # not sing-box's default 172.19.0.1: other VPN clients often take that one
@@ -59,16 +61,25 @@ def file_sha256(path: str) -> str:
     return h.hexdigest()
 
 
-def sing_box_ok(data: str) -> bool:
-    path = sing_box_path(data)
+def _file_ok(path: str, sha: str) -> bool:
     try:
-        return os.path.isfile(path) and file_sha256(path) == SING_BOX_EXE_SHA256
+        return os.path.isfile(path) and file_sha256(path) == sha
     except OSError:
         return False
 
 
+def _files(data: str) -> dict[str, tuple[str, str]]:
+    """{name in the archive: (where it goes, its hash)}."""
+    return {"sing-box.exe": (sing_box_path(data), SING_BOX_EXE_SHA256),
+            "libcronet.dll": (os.path.join(route_dir(data), "libcronet.dll"), CRONET_SHA256)}
+
+
+def sing_box_ok(data: str) -> bool:
+    return all(_file_ok(p, sha) for p, sha in _files(data).values())
+
+
 def download_sing_box(data: str, progress=None) -> None:
-    """Fetch the official Windows build, check both hashes, keep only sing-box.exe."""
+    """Fetch the official Windows build, check the hashes, keep sing-box.exe and libcronet.dll (Naive)."""
     if sing_box_ok(data):
         return
     folder = route_dir(data)
@@ -86,17 +97,20 @@ def download_sing_box(data: str, progress=None) -> None:
         if file_sha256(tmp) != SING_BOX_ZIP_SHA256:
             raise RuntimeError("sing-box download: checksum mismatch")
         with zipfile.ZipFile(tmp) as z:
-            name = next(n for n in z.namelist() if n.endswith("/sing-box.exe"))
-            with z.open(name) as src, open(sing_box_path(data) + ".tmp", "wb") as dst:
-                dst.write(src.read())
-        os.replace(sing_box_path(data) + ".tmp", sing_box_path(data))
+            for base, (path, sha) in _files(data).items():
+                if _file_ok(path, sha):
+                    continue  # only what is missing: a running sing-box.exe cannot be replaced
+                name = next(n for n in z.namelist() if n.endswith("/" + base))
+                with z.open(name) as src, open(path + ".tmp", "wb") as dst:
+                    dst.write(src.read())
+                os.replace(path + ".tmp", path)
     finally:
         try:
             os.remove(tmp)
         except OSError:
             pass
     if not sing_box_ok(data):
-        raise RuntimeError("sing-box.exe: checksum mismatch")
+        raise RuntimeError("sing-box files: checksum mismatch")
 
 
 # ---------- lists and config ----------

@@ -430,8 +430,8 @@ RU = {
     "never": "никогда",
     "just now": "только что",
     "{h} h ago": "{h} ч назад",
-    "A subscription link (https://…) or server links (vless://, vmess://, trojan://, ss://, hysteria2://, tuic://)":
-        "Ссылка подписки (https://…) или ссылки серверов (vless://, vmess://, trojan://, ss://, hysteria2://, tuic://)",
+    "A subscription link (https://…) or server links (vless://, vmess://, trojan://, ss://, hy2://, tuic://, anytls://, naive+https://, wireguard://)":
+        "Ссылка подписки (https://…) или ссылки серверов (vless://, vmess://, trojan://, ss://, hy2://, tuic://, anytls://, naive+https://, wireguard://)",
     "Add": "Добавить",
     "Search by name or address": "Поиск по названию или адресу",
     "All protocols": "Все протоколы",
@@ -686,4 +686,8 @@ RU = {
     "Got it": "Понятно",
     "Updates since version {v}: {n}": "Обновлений с версии {v}: {n}",
     "Updated to {v}": "Обновились до {v}",
+    "skipped: {n}": "пропущено: {n}",
+    "Skipped servers:": "Пропущенные серверы:",
+    "{scheme}:// links are not supported": "ссылки {scheme}:// не поддерживаются",
+    "transport {name} is not supported": "транспорт {name} не поддерживается",
 }

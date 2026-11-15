@@ -1,4 +1,4 @@
-<p align="center"><img src="media/banner.png" alt="XmelTunnel — your server for chosen sites and apps"></p>
+<p align="center"><img src="media/banner.png" alt="XmelTunnel — profiles for your whole PC: through a VPN, your own server or direct"></p>
 
 <p align="center">
   <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/igorxmel/XmelTunnel?label=version" alt="Version"></a>
@@ -7,114 +7,116 @@
   &nbsp;·&nbsp; <a href="README.ru.md">Русский</a>
 </p>
 
-Send chosen sites and apps through **your own server** over SSH. Everything else stays on your normal connection.
+XmelTunnel decides **how every program and every site** on your PC goes out: through a VPN, through your
+own server, or direct. Games and banks direct, blocked sites through the VPN, work tools always from your
+server's address. All at the same time.
 
-![Overview](media/overview.png)
 
 ## Why
 
-A full VPN moves *all* traffic. Sometimes you only want a few services to always see the same IP, the IP of a server you own, while the rest of your traffic stays where it is:
+A regular VPN pushes **all** traffic through itself. Games lag or ban you for "another country", banks
+refuse to open, and you end up switching the VPN on and off all day.
 
-- web apps that tie your session or account to an IP address;
-- dashboards and APIs behind an IP allowlist;
-- AI tools you use every day and want to reach from one stable address;
-- any site you would rather open from your server's location.
+XmelTunnel works the other way around: you write **profiles** (what goes where), and it keeps it that way:
 
-XmelTunnel does exactly that and **checks that it actually works**. It doesn't just set a proxy and hope.
+- **through the VPN**: blocked sites and programs;
+- **through your server**: things that should always see the same address, such as AI tools, dashboards
+  and accounts tied to an IP;
+- **direct**: games, banks, local services;
+- everything not in a profile goes where you say.
 
 ## What it does
 
-- **SSH tunnel to your server.** It keeps the tunnel up and reconnects when it drops. No VPN protocol, no open ports: the proxy on the server listens on `127.0.0.1` and is reachable only through SSH with your key.
-- **One-click server setup.** It installs a tiny proxy (tinyproxy, ~3 MB RAM) over SSH. Tested on Debian, Ubuntu, Alpine and Rocky/RHEL.
-- **Profiles.** A profile is a list of domains that go through the tunnel. Turn profiles on and off with a switch. Presets are included for Claude, ChatGPT, Gemini, Antigravity, Grok, Perplexity, Cursor, Windsurf and GitHub Copilot. You can also add your own list.
-- **Per-app routing without a VPN.** A PAC file sends only the profile's domains through the tunnel. Browsers and desktop apps that follow Windows proxy settings (Chrome, Edge, Electron apps) pick it up. Claude Code gets its proxy through `~/.claude/settings.json`.
-- **Fails closed.** If the tunnel is down, profile sites do not load. They never quietly go direct.
-- **Survives VPN clients.** Many VPN apps reset the Windows proxy settings when they disconnect. While a profile is on, XmelTunnel notices it and puts its PAC back.
-- **Leak watching.** For apps in a profile, XmelTunnel looks at their real TCP connections. It shows whether each app goes *through the tunnel* or *directly, around it*.
-- **Exit check.** It asks Cloudflare which IP and country it sees through the tunnel and compares the answer with your server.
-- **Notifications.** You get one when a watched app starts while the tunnel is down, when an app leaks around the tunnel, or when your VPN is off (optional, for servers reachable only through a VPN).
-- **Routing mode (since 0.2.0).** A whitelist for the whole PC on top of your VPN:
-  - everything goes **direct**, through your normal connection;
-  - only the programs, folders, domains and subnets of the first list go through the **VPN**;
-  - only the second list goes through **your server** (over the VPN if the server is reachable only through it).
+- **Built-in VPN client.** Subscriptions and server links: VLESS (Reality included), VMess, Trojan,
+  Shadowsocks, Hysteria2, TUIC, AnyTLS, Naive and WireGuard. Servers it cannot use do not vanish silently:
+  the subscription list says how many were skipped and why.
+- **Honest ping.** Latency is a real request through the server, the same number Throne and other sing-box
+  clients show, next to the **real exit country**: a server called "Germany" sometimes exits in the
+  Netherlands. The fastest server can be picked automatically, also within one country.
+- **Profiles for the whole PC.** A profile holds sites (with subdomains), programs (`Discord.exe`), folders
+  (every program inside, handy for games) and subnets. Programs and folders are more reliable than sites:
+  all their traffic goes, voice and game UDP included. Presets cover AI tools, often blocked sites and more.
+- **Your server.** Over an SSH key (a tiny proxy, ~3 MB of RAM, is installed on it) or by a share link.
+  No open ports: the proxy listens on `127.0.0.1` only and is reachable only through SSH.
+- **Share with friends.** "Share…" gives a friend a personal link to your server: their own port and key,
+  a traffic limit and an expiry date, usage counted. Friends cannot reach the server itself, your network
+  or mail ports, so nobody sends spam from your address.
+- **Traffic** per path and per server, received and sent separately.
+- **On top of another VPN client.** If you already run a client in TUN mode (Happ, v2rayN and the like),
+  XmelTunnel can send "through the VPN" into it and games and chosen apps around it.
+- **One click** on the ring connects or disconnects. Extra clicks while it is switching are ignored.
+- **Fails closed.** If the tunnel to your server is down, profile sites do not load; they never quietly go
+  direct. It checks which address and country each path really exits with.
+- **Updates itself** and shows what changed afterwards. Every file is checked by its checksum.
+- Dark and light theme, English and Russian, lives in the tray.
 
-  Handy when a game or a bank needs your normal connection and the rest needs the VPN, or when a game needs exactly your server's exit. Programs and folders are more reliable than domains: all their traffic goes, including voice and game UDP. See «Routing mode» below.
-- **Tray app.** A dark or light UI follows Windows. English and Russian.
-
-| Profile editor | Settings |
+| Profile editor | VPN servers |
 |---|---|
-| ![Profile](media/profile.png) | ![Settings](media/settings.png) |
-
-## Requirements
-
-- Windows 10/11 with the built-in OpenSSH client. It is installed by default; check with `ssh -V`.
-- A Linux server (any cheap VPS) that you can log into with an SSH **key**.
-
-If you log in with a password today, add your key once:
-
-```powershell
-ssh-keygen -t ed25519            # only if you have no key yet
-type $env:USERPROFILE\.ssh\id_ed25519.pub | ssh root@YOUR_SERVER "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
-```
+| ![Profile](media/profile.png) | ![Servers](media/servers.png) |
 
 ## Install
 
 Download from [Releases](../../releases/latest):
 
-- **`XmelTunnel-Setup.exe`** (recommended). Installs for your user only, no admin rights. Adds a Start menu shortcut and appears in Windows *Installed apps*, so uninstalling cleans everything up.
+- **`XmelTunnel-Setup.exe`** (recommended). Installs for your user only, no admin rights. Adds a Start menu
+  shortcut and appears in Windows *Installed apps*, so uninstalling cleans everything up.
 - **`XmelTunnel.exe`** is a portable single file if you don't want to install anything.
 
-Then:
+**Antivirus and SmartScreen.** The exe is not code-signed yet, so Windows may show "Windows protected your
+PC". Click *More info → Run anyway*. Every release file comes with a SHA-256 checksum. The installer is less
+likely to trigger false positives than the portable file. If your antivirus flags it, please
+[open an issue](../../issues).
 
-1. Run it. Settings open on the first launch.
-2. Enter your server (`1.2.3.4`, `user@host` or an alias from `~/.ssh/config`) and the key file.
-3. Click **Check connection**, then **Install proxy on the server**.
-4. Click **Save**, then turn on the profiles you need.
-5. Optional: turn on **Start with Windows**.
+## Quick start
 
-Restart the apps you want to route. Claude Code picks up its proxy in new sessions.
+The first launch opens "Quick start" (you can open it again from Settings). Start with what you have:
 
-**Antivirus and SmartScreen.** The exe is not code-signed yet, so Windows may show "Windows protected your PC". Click *More info → Run anyway*. Every release is built by GitHub Actions from this repository and comes with a SHA-256 checksum. The installer version is less likely to trigger false positives than the portable one. If your antivirus flags it, please [open an issue](../../issues).
+1. **A VPN subscription.** In the server window paste a subscription link (`https://…`) or server links,
+   press "Check ping" and pick a server, or keep "Automatic: the fastest".
+2. **Your server.** Enter its address (`1.2.3.4`, `user@host` or an alias from `~/.ssh/config`) and the key
+   file, press "Check connection", then "Install proxy on the server". A server is optional: the VPN works
+   without it.
+3. **Profiles.** Press "Add profile…", pick a preset or type your own, and choose where it goes.
 
-## Routing mode
-
-Needs a VPN client in TUN mode (Happ, v2rayN, Throne, WireGuard and the like): XmelTunnel sends traffic into its adapter and needs none of its keys.
-
-1. Turn the VPN on.
-2. On the «Routing mode» card press «Lists…» and fill in what goes through the VPN and what through your server. One entry per line: `Discord.exe`, `D:\Games\Game\` (every program in the folder), `youtube.com`, `10.0.0.0/8`.
-3. For the «through your server» list press «Install on the server» once. It installs Shadowsocks on sing-box over SSH (TCP and UDP, port 8388 by default). If your hosting has its own firewall in the control panel, open that port there.
-4. Flip the switch and confirm the admin rights request: the virtual adapter needs them.
-
-The card shows the IP and country each of the three paths exits with. On first use XmelTunnel downloads sing-box from its official release page (about 33 MB) and checks its checksum, and checks it again before every elevated start. The mode turns off together with XmelTunnel.
-
-Note: if your server is blocked in your country, local services won't open through it, since they sit behind the same filters. Keep local things direct.
+Then click the VPN ring. Windows asks for admin rights: they are needed for the virtual adapter that
+sing-box routes traffic through. If the prompts bother you, Settings can allow connecting without them
+through the Windows Task Scheduler.
 
 ## How to tell it really works
 
-- The ring is green, and the exit line shows your server's IP and country.
-- Each watched app says **through the tunnel**.
-- In a browser, `https://claude.ai/cdn-cgi/trace` (or any Cloudflare site in your profile) shows `ip=` equal to your server. `https://www.cloudflare.com/cdn-cgi/trace` shows your normal IP, because that site is not in a profile.
+- The "Your server" and "VPN" rings are green.
+- Under "Paths", each path shows its own exit address and country: "Direct" is your normal connection,
+  "VPN" the VPN server's country, "Server" your server.
+- In a browser, `https://www.cloudflare.com/cdn-cgi/trace` shows the address of the path that site takes by
+  your profiles.
+
+Note: if your server is blocked in your country, local services may not open through it either, since they
+sit behind the same filters. Keep local things direct.
 
 ## What it changes on your PC
 
 | What | Where | When |
 |---|---|---|
-| PAC URL | `HKCU\…\Internet Settings\AutoConfigURL` | while at least one profile is on. Your previous PAC URL is restored when you turn them all off |
-| Claude Code proxy | `env` block in `~/.claude/settings.json` | while a profile with Claude Code is on. Only values it wrote itself are removed |
+| PAC URL | `HKCU\…\Internet Settings\AutoConfigURL` | while a "through your server" profile is on; the previous value is restored afterwards |
+| Claude Code proxy | `env` block in `~/.claude/settings.json` | while a profile with Claude Code is on; only values it wrote itself are removed |
+| Virtual adapter "XmelTunnel" and its routes | sing-box | only while the VPN is connected |
+| Task "XmelTunnel Routing" | Windows Task Scheduler | only if you allowed connecting without the admin prompt |
 | Autostart | `HKCU\…\Run\XmelTunnel` | only if you turn it on |
-| Config and log | `%APPDATA%\XmelTunnel` | always |
-| Virtual adapter `xt-route` and its routes | sing-box | only while the routing mode is on |
+| Settings, log, sing-box | `%APPDATA%\XmelTunnel` | always |
 
-Nothing is installed system-wide. Admin rights are needed only by the routing mode.
-
-While XmelTunnel is closed, nothing serves the PAC file and Windows falls back to direct connections. Keep it running, or turn profiles off before quitting.
+sing-box is downloaded on the first connection from its official release page (about 33 MB), checked by
+its checksum, and checked again before every elevated start.
 
 ## Uninstall
 
-- **Installed with `XmelTunnel-Setup.exe`:** remove *XmelTunnel* in Windows *Settings → Apps → Installed apps*. The uninstaller undoes everything XmelTunnel changed: it puts your previous Windows proxy (PAC) setting back, removes its Claude Code proxy, turns off autostart, and deletes its settings and log.
-- **Portable exe:** open **Settings… → Remove from this PC…** (same cleanup), then delete `XmelTunnel.exe`. If you already deleted it, download it again and run `XmelTunnel.exe --uninstall`.
+- **Installed with `XmelTunnel-Setup.exe`:** remove *XmelTunnel* in *Settings → Apps → Installed apps*. The
+  uninstaller undoes what XmelTunnel changed: it puts your previous Windows proxy setting back, removes its
+  Claude Code proxy and autostart, and deletes its settings and log.
+- **Portable exe:** open **Settings → Remove from this PC…** (same cleanup), then delete `XmelTunnel.exe`.
+  If you already deleted it, download it again and run `XmelTunnel.exe --uninstall`.
 
-Your server is not touched. To remove the proxy there too, run `apt remove tinyproxy` (or your distro's equivalent).
+Your server is not touched. To remove the proxy there too, run `apt remove tinyproxy` (or your distro's
+equivalent).
 
 ## Build from source
 
@@ -126,10 +128,14 @@ python -m venv .venv
 .venv\Scripts\python build.py          # -> dist\XmelTunnel.exe, dist\XmelTunnel-Setup.exe (needs Inno Setup 6+)
 ```
 
+What changed between versions is in [CHANGELOG.md](CHANGELOG.md) (in Russian).
+
 ## Responsible use
 
-XmelTunnel routes traffic through a server **you** control. You are responsible for following the terms of the services you use and the laws that apply to you.
+XmelTunnel routes traffic through servers **you** choose. You are responsible for following the terms of the
+services you use and the laws that apply to you.
 
 ## License
 
-[GPL v3](LICENSE). Flag icons come from [flag-icons](https://github.com/lipis/flag-icons) (MIT); see [THIRD-PARTY.md](THIRD-PARTY.md).
+[GPL v3](LICENSE). Flag icons come from [flag-icons](https://github.com/lipis/flag-icons) (MIT), the core is
+[sing-box](https://github.com/SagerNet/sing-box) (GPL v3); see [THIRD-PARTY.md](THIRD-PARTY.md).

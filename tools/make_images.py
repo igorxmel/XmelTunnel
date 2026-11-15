@@ -1,8 +1,8 @@
-"""Render README banner and social preview images from the app's own icon and a screenshot.
+"""Render README banner and social preview images from the app's own icon and its main window.
 
     .venv\\Scripts\\python tools\\make_images.py
 
-Writes media/banner.png (1280x420), media/social.png and media/social-ru.png (1280x640, GitHub social preview).
+Writes media/banner.png (1280x744, drawn at 2x), media/social.png and media/social-ru.png (1280x640, GitHub social preview).
 """
 
 
@@ -35,13 +35,16 @@ BORDER = QColor("#3a3a44")
 GREEN = QColor("#4cc38a")
 
 TEXTS = {
-    "en": ("Your server for chosen sites and apps.",
-           "Everything else stays on your normal connection.",
-           "SSH tunnel · per-app routing · leak watching · Windows"),
-    "ru": ("Твой сервер для выбранных сайтов и приложений.",
-           "Остальной интернет — как обычно.",
-           "SSH-туннель · отдельные приложения · контроль утечек · Windows"),
+    "en": ("Profiles for your whole PC: through a VPN, your own server or direct.",
+           "Built-in VPN client with subscriptions, your server over SSH, sharing it with friends.",
+           "sing-box · per-app and per-site routing · honest ping · Windows"),
+    "ru": ("Профили для всего компьютера: через VPN, ваш сервер или напрямую.",
+           "Встроенный VPN-клиент с подписками, ваш сервер по SSH, доступ для друзей.",
+           "sing-box · программы и сайты по профилям · честный пинг · Windows"),
 }
+# what the built-in VPN client speaks
+PROTOCOL_CHIPS = ["VLESS · Reality", "VMess", "Trojan", "Shadowsocks", "Hysteria2", "TUIC", "AnyTLS", "Naive",
+                  "WireGuard"]
 
 
 def font(size: float, weight=QFont.Weight.Normal, family="Segoe UI Variable Display") -> QFont:
@@ -64,22 +67,33 @@ def background(p: QPainter, w: int, h: int) -> None:
         p.drawLine(0, y, w, y)
 
 
-def screenshot(p: QPainter, img: QImage, x: float, y: float, width: float) -> None:
-    scale = width / img.width()
-    rect = QRectF(x, y, width, img.height() * scale)
-    for i in range(18, 0, -3):  # soft shadow
+# pieces of the main window (its own 1x pixels, 1260x840): every card that shows what the app does
+SERVER_CARD = QRectF(221, 122, 500, 196)
+VPN_CARD = QRectF(735, 122, 500, 196)
+STATUS = QRectF(222, 331, 398, 281)         # «Status» with the three paths and their traffic
+PROFILES = QRectF(636, 331, 585, 281)       # «Profiles», «everything else →», the first rows
+
+
+def card(p: QPainter, img: QImage, src: QRectF, x: float, y: float, scale: float = 1.0) -> float:
+    """One card cut out of the window at (nearly) full size, floating with a shadow. Returns its bottom.
+    The whole window shrunk into a banner was unreadable: GitHub shows the banner at ~2/3 size anyway."""
+    k = img.width() / 1260  # the screenshot is rendered at 2x
+    rect = QRectF(x, y, src.width() * scale, src.height() * scale)
+    for i in range(20, 0, -4):  # soft shadow
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(0, 0, 0, 10))
-        p.drawRoundedRect(rect.adjusted(-i, -i + 8, i, i + 8), 14 + i, 14 + i)
+        p.setBrush(QColor(0, 0, 0, 16))
+        p.drawRoundedRect(rect.adjusted(-i, -i + 10, i, i + 10), 12 + i, 12 + i)
     clip = QPainterPath()
     clip.addRoundedRect(rect, 12, 12)
     p.save()
     p.setClipPath(clip)
-    p.drawImage(rect, img)
+    p.fillRect(rect, QColor("#111113"))
+    p.drawImage(rect, img, QRectF(src.x() * k, src.y() * k, src.width() * k, src.height() * k))
     p.restore()
     p.setPen(QPen(BORDER, 1.2))
     p.setBrush(Qt.BrushStyle.NoBrush)
     p.drawRoundedRect(rect, 12, 12)
+    return rect.bottom()
 
 
 def chips(p: QPainter, x: float, y: float, names: list[str], max_x: float) -> float:
@@ -105,51 +119,76 @@ def logo(p: QPainter, x: float, y: float, size: int) -> None:
         size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
 
-def render(w: int, h: int, lang: str, shot: QImage, compact: bool) -> QImage:
-    img = QImage(w, h, QImage.Format.Format_ARGB32)
+SCALE = 2  # every picture is drawn at 2x: sharp on high-DPI screens and when GitHub scales it
+GAP = 22
+
+
+def render(w: int, h: int, lang: str, shot: QImage, k: float) -> QImage:
+    """Name and protocols on top, then the window's four cards in two rows at scale k.
+    The whole window shrunk into a strip was unreadable, and any one or two cards left out what matters."""
+    img = QImage(w * SCALE, h * SCALE, QImage.Format.Format_ARGB32)
     p = QPainter(img)
+    p.scale(SCALE, SCALE)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     background(p, w, h)
-    title, sub, foot = TEXTS[lang]
-    left = 64
-    text_w = 620 if compact else 600
-    top = 56 if compact else 110
-    logo(p, left, top, 64)
+    title, sub, _ = TEXTS[lang]
+    row1 = (SERVER_CARD.width() + VPN_CARD.width()) * k + GAP
+    left = (w - row1) / 2
+    top = 34
+    logo(p, left, top, 48)
     p.setPen(TEXT)
-    p.setFont(font(34 if compact else 40, QFont.Weight.Bold))
-    p.drawText(QRectF(left + 82, top - 6, text_w, 76), Qt.AlignmentFlag.AlignVCenter, "XmelTunnel")
-    y = top + 100
-    p.setFont(font(17 if compact else 20, QFont.Weight.DemiBold))
-    r = p.boundingRect(QRectF(left, y, text_w, 200), Qt.TextFlag.TextWordWrap, title)
+    p.setFont(font(26, QFont.Weight.Bold))
+    p.drawText(QRectF(left + 62, top - 8, 400, 64), Qt.AlignmentFlag.AlignVCenter, "XmelTunnel")
+    y = top + 62
+    p.setFont(font(15, QFont.Weight.DemiBold))
+    r = p.boundingRect(QRectF(left, y, row1, 100), Qt.TextFlag.TextWordWrap, title)
     p.drawText(r, Qt.TextFlag.TextWordWrap, title)
-    y = r.bottom() + 8
+    y = r.bottom() + 4
     p.setPen(DIM)
-    p.setFont(font(13 if compact else 14.5, family="Segoe UI Variable Text"))
-    r = p.boundingRect(QRectF(left, y, text_w, 200), Qt.TextFlag.TextWordWrap, sub)
+    p.setFont(font(11.5, family="Segoe UI Variable Text"))
+    r = p.boundingRect(QRectF(left, y, row1, 100), Qt.TextFlag.TextWordWrap, sub)
     p.drawText(r, Qt.TextFlag.TextWordWrap, sub)
-    y = r.bottom() + 22
-    names = [x["name"] for x in profiles.PRESETS if x["id"] != "custom"]
-    y = chips(p, left, y, names, left + text_w)
-    if not compact:
-        p.setPen(MUTED)
-        p.setFont(font(11, family="Segoe UI Variable Text"))
-        p.drawText(QRectF(left, h - 70, text_w, 24), Qt.AlignmentFlag.AlignVCenter, foot)
-    sw = min(560 if compact else 600, (h - 64) * shot.width() / shot.height())  # keep it inside the frame
-    screenshot(p, shot, w - sw - 48, (h - shot.height() * sw / shot.width()) / 2, sw)
+    y = chips(p, left, r.bottom() + 14, PROTOCOL_CHIPS, left + row1) + 26
+    # row 1: your server, the VPN; row 2: status with the paths, the profiles
+    x = left
+    card(p, shot, SERVER_CARD, x, y, k)
+    card(p, shot, VPN_CARD, x + SERVER_CARD.width() * k + GAP, y, k)
+    y += max(SERVER_CARD.height(), VPN_CARD.height()) * k + GAP
+    row2 = (STATUS.width() + PROFILES.width()) * k + GAP
+    x = left + (row1 - row2) / 2
+    card(p, shot, STATUS, x, y, k)
+    card(p, shot, PROFILES, x + STATUS.width() * k + GAP, y, k)
     p.end()
     return img
+
+
+def hires_shots() -> dict:
+    """The main window rendered at 2x by screenshot_main.py, in a temporary folder."""
+    import subprocess
+    import tempfile
+
+    out, shots = tempfile.mkdtemp(prefix="xt-shots-"), {}
+    env = dict(os.environ, QT_SCALE_FACTOR="2", XT_BUILTIN="1")
+    for lang in TEXTS:
+        path = os.path.join(out, f"overview-{lang}.png")
+        subprocess.run([sys.executable, os.path.join(ROOT, "tools", "screenshot_main.py"), lang, "ok", path],
+                       env=env, check=True)
+        shots[lang] = QImage(path)
+    return shots
 
 
 def main() -> None:
     app = QApplication(sys.argv)  # noqa: F841 — must stay alive while painting
     media = os.path.join(ROOT, "media")
-    shots = {lang: QImage(os.path.join(media, "overview.png" if lang == "en" else "overview-ru.png"))
-             for lang in TEXTS}
-    render(1280, 420, "en", shots["en"], compact=True).save(os.path.join(media, "banner.png"))
-    render(1280, 420, "ru", shots["ru"], compact=True).save(os.path.join(media, "banner-ru.png"))
-    render(1280, 640, "en", shots["en"], compact=False).save(os.path.join(media, "social.png"))
-    render(1280, 640, "ru", shots["ru"], compact=False).save(os.path.join(media, "social-ru.png"))
+    shots = hires_shots()
+    for lang, banner, social in (("en", "banner.png", "social.png"), ("ru", "banner-ru.png", "social-ru.png")):
+        render(1280, 744, lang, shots[lang], 1.0).save(os.path.join(media, banner))
+        # GitHub's social preview: 1280x640 is what it asks for (and under 1 MB)
+        render(1280, 640, lang, shots[lang], 0.66).scaled(
+            1280, 640, Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation).save(os.path.join(media, social))
     print("written to", media)
 
 

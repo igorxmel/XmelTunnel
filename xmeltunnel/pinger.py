@@ -23,6 +23,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 from xmeltunnel import routing
+from xmeltunnel.servers import place_endpoints
 
 LATENCY_URL = "http://cp.cloudflare.com/generate_204"
 TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
@@ -134,7 +135,7 @@ def check(data: str, servers: list[dict], phys: str | None, progress=None, stop=
     folder = routing.route_dir(data)
     conf = os.path.join(folder, "ping.json")
     with open(conf, "w", encoding="utf-8") as f:
-        json.dump(build_config(servers, base, phys, api_port), f)
+        json.dump(place_endpoints(build_config(servers, base, phys, api_port)), f)
     log = os.path.join(folder, "ping.log")
     proc = subprocess.Popen([routing.sing_box_path(data), "run", "-c", conf, "--disable-color"],
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=open(log, "w", encoding="utf-8"),

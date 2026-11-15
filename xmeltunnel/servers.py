@@ -15,8 +15,23 @@ import urllib.parse
 import urllib.request
 
 PROTOCOLS = {"vless": "VLESS", "vmess": "VMess", "trojan": "Trojan", "shadowsocks": "Shadowsocks",
-             "hysteria2": "Hysteria2", "tuic": "TUIC"}
+             "hysteria2": "Hysteria2", "tuic": "TUIC", "anytls": "AnyTLS", "naive": "Naive",
+             "wireguard": "WireGuard"}
 PROXY_TYPES = set(PROTOCOLS)
+ENDPOINT_TYPES = {"wireguard"}  # sing-box keeps these under "endpoints", not "outbounds"
+
+
+def place_endpoints(conf: dict) -> dict:
+    """Move WireGuard (and other endpoint types) from conf["outbounds"] to conf["endpoints"].
+    Every config is built with servers as outbounds; this one step makes it valid for sing-box."""
+    obs = conf.get("outbounds") or []
+    eps = [o for o in obs if o.get("type") in ENDPOINT_TYPES]
+    if eps:
+        conf["outbounds"] = [o for o in obs if o.get("type") not in ENDPOINT_TYPES]
+        # the top-level server/server_port are ours (for the table); a WireGuard endpoint has its peers instead
+        eps = [{k: v for k, v in o.items() if k not in ("server", "server_port")} for o in eps]
+        conf["endpoints"] = (conf.get("endpoints") or []) + eps
+    return conf
 
 
 class LinkError(ValueError):
@@ -104,6 +119,8 @@ def parse_link(link: str) -> dict:
         return _vmess(link)
     if scheme == "ss":
         return _ss(link)
+    if scheme in ("wireguard", "wg"):
+        return _wireguard(link)
     u = urllib.parse.urlsplit(link)
     params = {k: v[0] for k, v in urllib.parse.parse_qs(u.query, keep_blank_values=True).items()}
     name = urllib.parse.unquote(u.fragment) or f"{u.hostname}:{u.port}"
@@ -136,6 +153,14 @@ def parse_link(link: str) -> dict:
             out["congestion_control"] = params["congestion_control"]
         if not out["tls"].get("alpn"):
             out["tls"]["alpn"] = ["h3"]
+    elif scheme == "anytls":
+        out = {"type": "anytls", "server": host, "server_port": port, "password": user, "tls": _tls(params, host)}
+    elif scheme in ("naive+https", "naive+quic", "naive"):
+        out = {"type": "naive", "server": host, "server_port": port, "username": user,
+               "password": urllib.parse.unquote(u.password or ""), "tls": _tls(params, host)}
+        if scheme == "naive+quic":
+            out["quic"] = True
+        scheme = "naive"
     else:
         raise LinkError(f"«{scheme}://» links are not supported")
     if scheme in ("vless", "trojan"):
@@ -166,6 +191,41 @@ def _vmess(link: str) -> dict:
             "outbound": out}
 
 
+def _wireguard(link: str) -> dict:
+    """wireguard://<private key>@host:port?publickey=…&address=10.0.0.2/32,fd00::2/128&reserved=1,2,3&mtu=1280"""
+    u = urllib.parse.urlsplit(link)
+    params = {k: v[0] for k, v in urllib.parse.parse_qs(u.query, keep_blank_values=True).items()}
+    host, port = u.hostname, u.port
+    key = urllib.parse.unquote(u.username or "") or _q(params, "privatekey", "secretkey")
+    pub = _q(params, "publickey", "peer_public_key", "pbk")
+    if not host or not port:
+        raise LinkError("no server address")
+    if not key or not pub:
+        raise LinkError("WireGuard link without keys")
+    address = [a.strip() for a in urllib.parse.unquote(_q(params, "address", "ip", default="10.0.0.2/32")).split(",")
+               if a.strip()]
+    address = [a if "/" in a else a + ("/128" if ":" in a else "/32") for a in address]
+    peer = {"address": host, "port": port, "public_key": pub.replace(" ", "+"),
+            "allowed_ips": ["0.0.0.0/0", "::/0"]}
+    psk = _q(params, "presharedkey", "psk")
+    if psk:
+        peer["pre_shared_key"] = psk.replace(" ", "+")
+    reserved = _q(params, "reserved")
+    if reserved:
+        try:
+            peer["reserved"] = [int(x) for x in reserved.split(",")][:3]
+        except ValueError:
+            pass
+    out = {"type": "wireguard", "address": address, "private_key": key.replace(" ", "+"), "peers": [peer],
+           # the server's address and port are also kept at the top, where every other protocol has them
+           "server": host, "server_port": port}
+    mtu = _q(params, "mtu")
+    if mtu.isdigit():
+        out["mtu"] = int(mtu)
+    name = urllib.parse.unquote(u.fragment) or f"{host}:{port}"
+    return {"name": name, "protocol": "wireguard", "host": host, "port": port, "outbound": out}
+
+
 def _ss(link: str) -> dict:
     body = link[len("ss://"):]
     body, _, frag = body.partition("#")
@@ -191,7 +251,8 @@ def _ss(link: str) -> dict:
 
 def server_id(outbound: dict) -> str:
     """Stable id from what identifies a server (address, port, protocol, credentials)."""
-    key = json.dumps({k: outbound.get(k) for k in ("type", "server", "server_port", "uuid", "password")},
+    key = json.dumps({k: outbound.get(k) for k in ("type", "server", "server_port", "uuid", "password",
+                                                   "private_key", "username")},
                      sort_keys=True)
     return hashlib.sha1(key.encode()).hexdigest()[:12]
 
@@ -204,7 +265,9 @@ def make_server(parsed: dict, sub: str = "") -> dict:
 
 # ---------- text and subscriptions ----------
 
-LINK_RX = re.compile(r"(?:vless|vmess|trojan|ss|hysteria2|hy2|tuic)://[^\r\n\t\"'<>]+", re.I)
+LINK_RX = re.compile(r"(?:vless|vmess|trojan|ss|hysteria2|hy2|tuic|anytls|naive\+https|naive\+quic|wireguard|wg)"
+                     r"://[^\r\n\t\"'<>]+", re.I)
+OTHER_RX = re.compile(r"(?<![\w+.-])([a-z][a-z0-9+.-]{1,20})://", re.I)  # any link, to name the ones we skip
 
 
 def parse_text(text: str, sub: str = "") -> tuple[list[dict], list[str]]:
@@ -220,6 +283,10 @@ def parse_text(text: str, sub: str = "") -> tuple[list[dict], list[str]]:
         except (ValueError, UnicodeError):
             pass
     servers, errors, seen = [], [], set()
+    for scheme in OTHER_RX.findall(text):
+        sc = scheme.lower()
+        if sc not in ("http", "https") and not LINK_RX.match(sc + "://x"):
+            errors.append(f"{sc}://…: «{sc}://» links are not supported")
     for link in LINK_RX.findall(text):
         link = link.strip()
         try:
@@ -235,14 +302,29 @@ def parse_text(text: str, sub: str = "") -> tuple[list[dict], list[str]]:
     return servers, errors
 
 
+def skipped_summary(errors: list[str]) -> dict[str, int]:
+    """{reason: how many servers} from parse errors: what a subscription had that we could not use."""
+    out: dict[str, int] = {}
+    for e in errors:
+        reason = e.split(": ", 1)[-1] if ": " in e else e
+        if reason == "no server links found":
+            continue
+        out[reason] = out.get(reason, 0) + 1
+    return out
+
+
 def _from_singbox(text: str, sub: str) -> tuple[list[dict], list[str]]:
     try:
         data = json.loads(text)
     except ValueError as e:
         return [], [f"broken JSON: {e}"]
     servers = []
-    for ob in data.get("outbounds", []):
-        if ob.get("type") not in PROXY_TYPES or not ob.get("server"):
+    for ob in (data.get("outbounds") or []) + (data.get("endpoints") or []):
+        if ob.get("type") not in PROXY_TYPES:
+            continue
+        if ob.get("type") == "wireguard" and not ob.get("server") and ob.get("peers"):
+            ob = dict(ob, server=ob["peers"][0].get("address", ""), server_port=ob["peers"][0].get("port", 0))
+        if not ob.get("server"):
             continue
         ob = {k: v for k, v in ob.items() if k not in ("tag", "detour")}
         name = data.get("_names", {}).get(ob.get("server"), "") or f"{ob['server']}:{ob.get('server_port')}"

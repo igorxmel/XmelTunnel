@@ -889,7 +889,8 @@ class Engine:
                 with self.cfg_lock:
                     sub.update(updated_at=time.time(), error=err)
                     if found is not None and found:
-                        sub.update(count=len(found), info=info, title=info.get("title") or sub.get("title", ""))
+                        sub.update(count=len(found), info=info, title=info.get("title") or sub.get("title", ""),
+                               skipped=servers.skipped_summary(errors))
                         others = [s for s in self.cfg["servers"] if s.get("sub") != sub["id"]]
                         self.cfg["servers"] = others + found
                 log(f"subscription {sub['id']}: {len(found or [])} servers {err}")
@@ -1078,9 +1079,16 @@ class Engine:
             return
 
         def run():
+            nonlocal version
             self._update_set(status="downloading", progress=0, error="")
             try:
-                path = updater.download(version, os.path.join(data_dir(), "update"),
+                # the version found hours ago may be outdated: go straight to the newest, not through each one
+                version = updater.check() or version
+                self._update_set(version=version)
+            except Exception:  # noqa: BLE001 — no answer now: the one found earlier is still fine
+                pass
+            try:
+                path = updater.download(version,os.path.join(data_dir(), "update"),
                                         lambda pct: self._update_set(progress=pct))
             except Exception as e:  # noqa: BLE001
                 log(f"update download failed: {e!r}")
@@ -1170,6 +1178,7 @@ class Engine:
             return self._route_set(status="error",
                                    error=tr("Your server part is not installed: Lists… → Install on the server."))
         conf = routing.build_config(cfg, self.ip, phys, vpn)
+        servers.place_endpoints(conf)
         # placeholder addresses survive a restart: apps keep using the ones they got
         conf["experimental"]["cache_file"] = {"enabled": True, "store_fakeip": True,
                                               "path": os.path.join(routing.route_dir(data), "cache.db")}
@@ -1311,7 +1320,7 @@ class Engine:
                 "route": {"final": "server", "default_domain_resolver": "doh"}}
         path = os.path.join(routing.route_dir(data), "server-proxy.json")
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(conf, f)
+            json.dump(servers.place_endpoints(conf), f)
         return [routing.sing_box_path(data), "run", "-c", path, "--disable-color"]
 
     def _tunnel(self) -> None:

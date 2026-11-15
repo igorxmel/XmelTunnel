@@ -19,13 +19,13 @@ qa.setStyle("Fusion")
 theme.apply(_os.environ.get("XT_LIGHT") == "1"); qa.setStyleSheet(theme.stylesheet())
 cfg = json.loads(json.dumps(core.DEFAULTS))
 cfg["server"] = "" if scenario == "setup" else "root@203.0.113.7"
-cfg["profiles"] = [profiles.normalize(dict(profiles.preset("claude"), enabled=True)),
+cfg["profiles"] = [profiles.normalize(dict(profiles.preset("blocked"), name="Часто блокируемое" if lang == "ru" else "Often blocked", enabled=True)),
+                   profiles.normalize({"id": "games", "name": "Игры" if lang == "ru" else "Games", "target": "direct", "enabled": True,
+                                       "entries": ["D:\\Games\\Tanki\\", "lesta.ru"]}),
+                   profiles.normalize(dict(profiles.preset("claude"), enabled=True)),
                    profiles.normalize(dict(profiles.preset("gemini"), enabled=True)),
                    profiles.normalize(dict(profiles.preset("antigravity"), enabled=False)),
-                   profiles.normalize(dict(profiles.preset("chatgpt"), enabled=False)),
-                   profiles.normalize(dict(profiles.preset("blocked"), name="Часто блокируемое", enabled=True)),
-                   profiles.normalize({"id": "games", "name": "Игры", "target": "direct", "enabled": True,
-                                       "entries": ["D:\\Games\\Tanki\\", "lesta.ru"]})]
+                   profiles.normalize(dict(profiles.preset("chatgpt"), enabled=False))]
 class E(core.Engine):
     def start(self): pass
 e = E(cfg); e.ip = "203.0.113.7"
@@ -46,6 +46,11 @@ if scenario == "down":
     apps[("claude", 1)] = {"pids": {9}, "via": 0, "direct": 0}
     e.state.update(tunnel=False, pac=True)
 e.state["apps"] = apps
+if scenario == "ok":  # a believable week of traffic, split into received and sent
+    G = 2**30
+    cfg["traffic"] = {"direct": int(41.6*G), "direct:down": int(39.2*G), "direct:up": int(2.4*G),
+                      "vpn": int(12.9*G), "vpn:down": int(12.1*G), "vpn:up": int(0.8*G),
+                      "server": int(3.1*G), "server:down": int(2.8*G), "server:up": int(0.3*G)}
 if _os.environ.get("XT_BUILTIN") == "1":
     from xmeltunnel import servers as _sv
     got, _ = _sv.parse_text("trojan://pw@198.51.100.7:443#%F0%9F%87%AB%F0%9F%87%AE%20Helsinki%20Fast")

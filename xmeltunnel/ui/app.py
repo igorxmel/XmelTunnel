@@ -406,9 +406,13 @@ class VpnCard(QFrame):
             else:
                 text, lvl, flag = route_path_text(checks.get(key))
                 used = cfg.get("traffic") or {}
+                pill.setToolTip(text)
                 if used.get(key):
                     from xmeltunnel.ui.servers_dialog import fmt_traffic
 
+                    # the flag already says the country: its name goes to the tooltip, the traffic fits in full
+                    if flag and lvl == "ok":
+                        text = checks[key][0]
                     text += f"  ·  {fmt_traffic(used, key)}"
                 pill.set_state(text, lvl, flag)
 

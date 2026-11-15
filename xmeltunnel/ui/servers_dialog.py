@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 
 from PyQt6.QtCore import Qt, QTimer
@@ -56,6 +57,17 @@ def fmt_traffic(traffic: dict, key: str) -> str:
     return f"↓ {fmt_bytes(down + old)}  ↑ {fmt_bytes(up)}"
 
 
+def skip_reason(reason: str) -> str:
+    """Parse errors (English, from servers.py) in the user's words."""
+    m = re.match(r"«(.+?)://» links are not supported", reason)
+    if m:
+        return tr("{scheme}:// links are not supported", scheme=m.group(1))
+    m = re.match(r"transport «(.+?)» is not supported", reason)
+    if m:
+        return tr("transport {name} is not supported", name=m.group(1))
+    return reason
+
+
 def ago_short(ts: float) -> str:
     if not ts:
         return tr("never")
@@ -78,7 +90,7 @@ class ServersDialog(FramelessDialog):
         add = QHBoxLayout()
         self.link = QLineEdit()
         self.link.setPlaceholderText(tr("A subscription link (https://…) or server links (vless://, vmess://, trojan://, "
-                                        "ss://, hysteria2://, tuic://)"))
+                                        "ss://, hy2://, tuic://, anytls://, naive+https://, wireguard://)"))
         self.link.returnPressed.connect(self.on_add)
         add.addWidget(self.link, 1)
         b = QPushButton(tr("Add"), objectName="primary")
@@ -292,11 +304,18 @@ class ServersDialog(FramelessDialog):
                 extra += " · " + tr("until {date}", date=time.strftime("%d.%m.%Y", time.localtime(info["expire"])))
             text = f"{sub.get('title') or sub['url']} — " + tr("servers: {n}", n=sub.get("count", 0)) + \
                 f" · {ago_short(sub.get('updated_at', 0))}{extra}"
+            skipped = sub.get("skipped") or {}
+            if skipped:
+                text += " · " + tr("skipped: {n}", n=sum(skipped.values()))
             if sub.get("error"):
                 text += "  ⚠ " + sub["error"]
             it = QListWidgetItem(text)
             it.setData(Qt.ItemDataRole.UserRole, sub["id"])
-            it.setToolTip(sub["url"])
+            tip = sub["url"]
+            if skipped:  # what the subscription had that XmelTunnel cannot use
+                tip += "\n\n" + tr("Skipped servers:") + "\n" + "\n".join(
+                    f"{skip_reason(r)}: {n}" for r, n in sorted(skipped.items(), key=lambda kv: -kv[1]))
+            it.setToolTip(tip)
             self.subs.addItem(it)
         cc = self.country.currentData()
         self.b_auto.setText(tr("Automatically: fastest in {country}", country=country_name(cc)) if cc
