@@ -250,12 +250,18 @@ def build_config(cfg: dict, server_ip: str, phys: str, vpn: str | None) -> dict:
     # (their traffic reaches 127.0.0.1, not this adapter), so they get no rules here.
     rules += _rules(via_dir, "direct") + (_rules(via_srv, "server") if has_server else []) + _rules(via_vpn, "vpn")
 
-    if default == "direct":  # DNS answers should fit the exit the site goes through
+    # FakeIP for whatever may leave through the VPN or your server: apps get a placeholder address, and the
+    # outbound receives the site's NAME, not an IP we resolved here. Servers route by names (Quattro sends
+    # Google/Gemini through Cloudflare), so a bare IP made Gemini come from a datacenter address it refuses.
+    # Throne and other sing-box clients behave the same way. Direct traffic resolves names normally.
+    fake = {"query_type": ["A", "AAAA"], "server": "fakeip"}
+    if default == "direct":
         listed = (via_srv["domains"] if has_server else []) + via_vpn["domains"]
-        dns_rules = [{"domain_suffix": listed, "server": "dns-remote"}] if listed else []
+        dns_rules = [dict(fake, domain_suffix=listed)] if listed else []
         dns_final = "dns-local"
     else:
         dns_rules = [{"domain_suffix": via_dir["domains"], "server": "dns-local"}] if via_dir["domains"] else []
+        dns_rules.append(fake)
         dns_final = "dns-remote"
     return {
         "log": {"level": "warn", "timestamp": True},
@@ -267,6 +273,8 @@ def build_config(cfg: dict, server_ip: str, phys: str, vpn: str | None) -> dict:
                 # listed sites are resolved on the far side, so the answer fits the exit
                 {"type": "udp", "tag": "dns-remote", "server": "1.1.1.1",
                  "detour": "vpn" if vpn else ("server" if has_server else "direct")},
+                # IPv4 only: an IPv6 range would fall into fc00::/7, which counts as a private address
+                {"type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15"},
             ],
             "rules": dns_rules,
             "final": dns_final,

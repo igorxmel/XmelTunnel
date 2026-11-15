@@ -1164,6 +1164,9 @@ class Engine:
             return self._route_set(status="error",
                                    error=tr("Your server part is not installed: Lists… → Install on the server."))
         conf = routing.build_config(cfg, self.ip, phys, vpn)
+        # placeholder addresses survive a restart: apps keep using the ones they got
+        conf["experimental"]["cache_file"] = {"enabled": True, "store_fakeip": True,
+                                              "path": os.path.join(routing.route_dir(data), "cache.db")}
         path = routing.config_file(data)
         body = json.dumps(conf, ensure_ascii=False, indent=2)
         try:

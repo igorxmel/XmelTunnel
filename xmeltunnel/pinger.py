@@ -27,8 +27,8 @@ from xmeltunnel import routing
 LATENCY_URL = "http://cp.cloudflare.com/generate_204"
 TRACE_URL = "https://www.cloudflare.com/cdn-cgi/trace"
 SAMPLES = 3
-TIMEOUT = 8
-PARALLEL = 16
+TIMEOUT = 5  # a server slower than this is useless anyway; each dead one costs this much
+PARALLEL = 32
 
 
 def _free_base(count: int) -> int:
