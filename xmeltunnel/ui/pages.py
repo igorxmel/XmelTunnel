@@ -75,6 +75,16 @@ class UpdatesPage(QWidget):
         self.b_action.setMinimumWidth(220)
         self.b_action.clicked.connect(win.update_action)
         row.addWidget(self.b_action)
+        news = QPushButton(tr("What's new"))
+        news.setToolTip(tr("What changed in each version"))
+
+        def show_news() -> None:
+            from xmeltunnel.ui import whatsnew
+
+            whatsnew.history(win)
+
+        news.clicked.connect(show_news)
+        row.addWidget(news)
         row.addStretch()
         lay.addLayout(row)
         self.auto = QCheckBox(tr("Check for updates automatically"))

@@ -42,12 +42,18 @@ def ping_text(chk: dict | None) -> tuple[str, str, tuple]:
     return f"{ms} {tr('ms')}{lossy}", level, (0, ms)
 
 
-def fmt_traffic(n: int) -> str:
-    if not n:
-        return "—"
+def fmt_traffic(traffic: dict, key: str) -> str:
+    """'↓ 2.9 GB  ↑ 0.4 GB' (received, sent); only the total for traffic counted before the split."""
     from xmeltunnel.sharing import fmt_bytes
 
-    return fmt_bytes(n)
+    total = traffic.get(key, 0)
+    if not total:
+        return "—"
+    up, down = traffic.get(key + ":up", 0), traffic.get(key + ":down", 0)
+    old = total - up - down  # counted by a version without the split
+    if not (up or down) or old > total / 2:
+        return fmt_bytes(total)
+    return f"↓ {fmt_bytes(down + old)}  ↑ {fmt_bytes(up)}"
 
 
 def ago_short(ts: float) -> str:
@@ -124,7 +130,7 @@ class ServersDialog(FramelessDialog):
 
         self.table = QTableWidget(0, len(COLS))
         self.table.setHorizontalHeaderLabels([tr(c) if c else "" for c in COLS])
-        self.table.horizontalHeaderItem(5).setToolTip(tr("Traffic through this server while XmelTunnel's VPN used it."))
+        self.table.horizontalHeaderItem(5).setToolTip(tr("Traffic through this server while XmelTunnel's VPN used it: ↓ received, ↑ sent."))
         self.table.horizontalHeaderItem(4).setToolTip(tr("Median of 3 real requests through the server. Click to sort."))
         self.table.verticalHeader().hide()
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -249,7 +255,7 @@ class ServersDialog(FramelessDialog):
                 SortItem(servers.display_name(s["name"]), s["name"].lower()),
                 SortItem(servers.PROTOCOLS.get(s["protocol"], s["protocol"]), s["protocol"]),
                 SortItem(text, key),
-                SortItem(fmt_traffic(traffic.get("srv:" + s["id"], 0)), -traffic.get("srv:" + s["id"], 0)),
+                SortItem(fmt_traffic(traffic, "srv:" + s["id"]), -traffic.get("srv:" + s["id"], 0)),
                 SortItem(f"{exit_loc} · {(chk or {}).get('exit_ip', '')}" if exit_loc else "—", exit_loc or "~"),
                 SortItem(subs.get(s.get("sub"), tr("added by hand")), s.get("sub") or "~"),
             ]

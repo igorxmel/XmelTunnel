@@ -306,6 +306,14 @@ RU = {
     "could not check for updates": "не удалось проверить обновления",
     "Update check failed: {err}": "Не удалось проверить обновления: {err}",
     "Quick start": "Быстрый старт",
+    "Reset traffic": "Сбросить трафик",
+    "Start counting traffic from zero: on every path and every server.":
+        "Начать счёт трафика с нуля — на всех путях и серверах.",
+    "Reset the traffic counters of all paths and servers?":
+        "Сбросить счётчики трафика всех путей и серверов?",
+    "Quick start…": "Быстрый старт…",
+    "The first-run window again: set up a server, a subscription or the first profile.":
+        "Окно первого запуска: настроить сервер, подписку или первый профиль.",
     "Welcome to XmelTunnel": "Добро пожаловать в XmelTunnel",
     "Pick what to start with. Both can be used together, and everything can be changed later in Settings.":
         "Выберите, с чего начать. Можно пользоваться и тем, и другим сразу, а поменять всё можно потом в настройках.",
@@ -661,8 +669,21 @@ RU = {
     "Throne or another VPN client that is running.":
         "Только если серверы подписки у вас заблокированы: тогда XmelTunnel подключается к ним через запущенный Happ, "
         "Throne или другой VPN-клиент.",
-    "Traffic through this server while XmelTunnel's VPN used it.":
-        "Трафик через этот сервер, пока его использовал VPN XmelTunnel.",
+    "Traffic through this server while XmelTunnel's VPN used it: ↓ received, ↑ sent.":
+        "Трафик через этот сервер, пока его использовал VPN XmelTunnel: ↓ получено, ↑ отправлено.",
     "Median of 3 real requests through the server. Click to sort.":
         "Задержка по встроенной проверке sing-box — как в Throne и других клиентах на sing-box. Нажмите, чтобы отсортировать.",
+    "Click to connect": "Нажмите, чтобы подключить",
+    "Click to disconnect": "Нажмите, чтобы отключить",
+    "Click to apply profiles": "Нажмите, чтобы применить профили",
+    "Click to stop applying profiles": "Нажмите, чтобы перестать применять профили",
+    "Click to set up": "Нажмите, чтобы настроить",
+    "Disconnecting…": "Отключается…",
+    "What's new": "Что нового",
+    "What changed in each version": "Что менялось в каждой версии",
+    "Version {v}": "Версия {v}",
+    "All versions": "Все версии",
+    "Got it": "Понятно",
+    "Updates since version {v}: {n}": "Обновлений с версии {v}: {n}",
+    "Updated to {v}": "Обновились до {v}",
 }

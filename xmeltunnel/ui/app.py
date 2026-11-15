@@ -201,8 +201,16 @@ class VpnCard(QFrame):
         lay.setContentsMargins(20, 16, 20, 16)
         lay.setSpacing(18)
         self.ring = StatusRing("shield", 84)
-        self.ring.clicked.connect(win.engine.check_route)
-        lay.addWidget(self.ring, 0, Qt.AlignmentFlag.AlignTop)
+        self.ring.toggle_requested.connect(lambda: win.engine.set_route_enabled(not win.engine.cfg["route_enabled"]))
+        rc = QVBoxLayout()
+        rc.setSpacing(6)
+        rc.addWidget(self.ring, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.ring_hint = QLabel(objectName="ringHint", alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.ring_hint.setWordWrap(True)
+        self.ring_hint.setFixedWidth(96)
+        rc.addWidget(self.ring_hint)
+        rc.addStretch()
+        lay.addLayout(rc)
         col = QVBoxLayout()
         col.setSpacing(6)
         col.addWidget(QLabel(tr("VPN").upper(), objectName="section"))
@@ -239,11 +247,6 @@ class VpnCard(QFrame):
         col.addWidget(self.server_line)
         btns = QHBoxLayout()
         btns.setSpacing(8)
-        self.b_connect = QPushButton(objectName="primary")
-        self.b_connect.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.b_connect.setMinimumWidth(150)
-        self.b_connect.clicked.connect(lambda: win.engine.set_route_enabled(not win.engine.cfg["route_enabled"]))
-        btns.addWidget(self.b_connect)
         self.b_retry_route = QPushButton(tr("Retry"), objectName="small")
         self.b_retry_route.setCursor(Qt.CursorShape.PointingHandCursor)
         self.b_retry_route.clicked.connect(win.engine.retry_route)
@@ -263,6 +266,20 @@ class VpnCard(QFrame):
         self.b_check_route.setCursor(Qt.CursorShape.PointingHandCursor)
         self.b_check_route.clicked.connect(win.engine.check_route)
         head.addWidget(self.b_check_route)
+        self.b_reset_traffic = QPushButton(tr("Reset traffic"), objectName="small")
+        self.b_reset_traffic.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.b_reset_traffic.setToolTip(tr("Start counting traffic from zero: on every path and every server."))
+
+        def reset_traffic() -> None:
+            from xmeltunnel.ui.frameless import confirm
+
+            if confirm(win, tr("Reset traffic"), tr("Reset the traffic counters of all paths and servers?"),
+                       yes=tr("Reset traffic"), no=tr("Cancel"), danger=True):
+                win.engine.reset_traffic()
+                win.refresh()
+
+        self.b_reset_traffic.clicked.connect(reset_traffic)
+        head.addWidget(self.b_reset_traffic)
         pl.addLayout(head)
         self.pills = {}
         for key in ("direct", "vpn", "server"):
@@ -360,20 +377,24 @@ class VpnCard(QFrame):
                 "server» profiles go through your server.")
         busy = status in ("downloading", "starting", "restarting") or (status == "running" and r["checking"])
         self.ring.set_level(level, busy=busy)
+        on = cfg["route_enabled"]
+        self.ring.set_locked(busy and status != "running" or time.monotonic() < self.ring._cool)
+        if busy and status != "running":
+            hint = tr("Connecting…") if on else tr("Disconnecting…")
+        elif external:
+            hint = tr("Click to stop applying profiles") if on else tr("Click to apply profiles")
+        else:
+            hint = tr("Click to disconnect") if on else tr("Click to connect")
+        self.ring_hint.setText(hint)
+        self.ring.setToolTip(hint)
         self.title.setText(title)
         self.sub.setText(text)
         self.sub.setObjectName("error" if status == "error" else "note")
         self.sub.style().unpolish(self.sub)
         self.sub.style().polish(self.sub)
-        if external:
-            self.b_connect.setText(tr("Stop applying profiles") if cfg["route_enabled"] else tr("Apply profiles"))
-        else:
-            self.b_connect.setText(tr("Disconnect") if cfg["route_enabled"] else tr("Connect"))
-        self.b_connect.setObjectName("" if cfg["route_enabled"] else "primary")
-        self.b_connect.style().unpolish(self.b_connect)
-        self.b_connect.style().polish(self.b_connect)
         self.b_retry_route.setVisible(cfg["route_enabled"] and status in ("error", "off"))
         self.b_check_route.setVisible(status == "running")
+        self.b_reset_traffic.setVisible(any((cfg.get("traffic") or {}).values()))
         self.paths_note.setVisible(status != "running")
         for key, pill in self.pills.items():
             if status != "running":
@@ -384,17 +405,18 @@ class VpnCard(QFrame):
                 pill.set_state(tr("not installed"), "unknown")
             else:
                 text, lvl, flag = route_path_text(checks.get(key))
-                used = (cfg.get("traffic") or {}).get(key, 0)
-                if used:
-                    from xmeltunnel.sharing import fmt_bytes
+                used = cfg.get("traffic") or {}
+                if used.get(key):
+                    from xmeltunnel.ui.servers_dialog import fmt_traffic
 
-                    text += f"  ·  {fmt_bytes(used)}"
+                    text += f"  ·  {fmt_traffic(used, key)}"
                 pill.set_state(text, lvl, flag)
 
 
 class MainWindow(FramelessWindow):
     def __init__(self, engine: core.Engine):
         super().__init__(APP_NAME, app_icon())
+        self.pending_whatsnew: str | None = None
         self.engine = engine
         self.quitting = False
         self.rows: dict[str, ProfileRow] = {}
@@ -454,8 +476,16 @@ class MainWindow(FramelessWindow):
         hl.setContentsMargins(20, 16, 20, 16)
         hl.setSpacing(18)
         self.ring = StatusRing("server", 84)
-        self.ring.clicked.connect(self.engine.check_now)
-        hl.addWidget(self.ring, 0, Qt.AlignmentFlag.AlignTop)
+        self.ring.toggle_requested.connect(self.toggle_server)
+        rc = QVBoxLayout()
+        rc.setSpacing(6)
+        rc.addWidget(self.ring, 0, Qt.AlignmentFlag.AlignHCenter)
+        self.ring_hint = QLabel(objectName="ringHint", alignment=Qt.AlignmentFlag.AlignHCenter)
+        self.ring_hint.setWordWrap(True)
+        self.ring_hint.setFixedWidth(96)
+        rc.addWidget(self.ring_hint)
+        rc.addStretch()
+        hl.addLayout(rc)
         info = QVBoxLayout()
         info.setSpacing(6)
         self.h_caption = QLabel(tr("Your server").upper(), objectName="section")
@@ -481,14 +511,11 @@ class MainWindow(FramelessWindow):
         self.b_main.clicked.connect(self.main_action)
         self.b_main.setToolTip(tr("Checks right now that sites go out through your server: asks Cloudflare which "
                                   "IP and country it sees, and how long that takes."))
-        self.b_re = QPushButton(objectName="small")
-        self.b_re.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.b_re.clicked.connect(lambda: self.engine.set_server_enabled(not self.engine.cfg.get("server_enabled", True)))
         self.b_friends = QPushButton(tr("Share…"), objectName="small")
         self.b_friends.setCursor(Qt.CursorShape.PointingHandCursor)
         self.b_friends.setToolTip(tr("Share your server: personal links, traffic, limits"))
         self.b_friends.clicked.connect(self.open_sharing)
-        for b in (self.b_main, self.b_re, self.b_friends):
+        for b in (self.b_main, self.b_friends):
             b.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)  # never cut: the card grows
             btns.addWidget(b)
         btns.addStretch()
@@ -607,6 +634,7 @@ class MainWindow(FramelessWindow):
         self.settings_panel.saved.connect(self.on_settings_saved)
         self.settings_panel.reset_requested.connect(self.build_settings)
         self.settings_panel.remove_requested.connect(self.remove_from_pc)
+        self.settings_panel.welcome_requested.connect(self.welcome)
         self.settings_slot.addWidget(self.settings_panel)
 
     # --- actions ---
@@ -616,6 +644,13 @@ class MainWindow(FramelessWindow):
             self.open_settings()
         else:
             self.engine.check_now()
+
+    def toggle_server(self) -> None:
+        if not core.has_server(self.engine.cfg):
+            self.open_settings()
+        else:
+            self.engine.set_server_enabled(not self.engine.cfg.get("server_enabled", True))
+        self.refresh()
 
     def open_sharing(self) -> None:
         from xmeltunnel.ui.sharing_dialog import SharingDialog
@@ -753,8 +788,11 @@ class MainWindow(FramelessWindow):
         self.b_main.setText(tr("Set up the server") if setup else tr("Check the connection"))
         self.b_main.setVisible(setup or enabled)
         self.b_main.setEnabled(setup or (s["tunnel"] and not s["checking"]))
-        self.b_re.setVisible(not setup)
-        self.b_re.setText(tr("Disconnect") if enabled else tr("Connect"))
+        hint = (tr("Click to set up") if setup else
+                tr("Click to disconnect") if enabled else tr("Click to connect"))
+        self.ring_hint.setText(hint)
+        self.ring.setToolTip(hint)
+        self.ring.set_locked(time.monotonic() < self.ring._cool)
         self.b_friends.setVisible(not setup and not link)  # sharing needs SSH to your own server
         self.kv["tunnel"].key_label.setText(tr("Link proxy") if link else tr("SSH tunnel"))
         self.kv["proxy"].setVisible(not link)
@@ -819,6 +857,11 @@ class MainWindow(FramelessWindow):
     # --- window ---
 
     def show_window(self) -> None:
+        if self.pending_whatsnew is not None:  # after an update: once, when the window is first seen
+            seen, self.pending_whatsnew = self.pending_whatsnew, None
+            from xmeltunnel.ui import whatsnew
+
+            QTimer.singleShot(500, lambda: whatsnew.after_update(self, seen))
         if self.isMaximized() or (not self.isVisible() and self._start_maximized):
             self.showMaximized()
         else:
@@ -1028,6 +1071,15 @@ def main() -> int:
 
     engine.start()
     win = MainWindow(engine)
+    from xmeltunnel import changelog
+
+    seen = engine.cfg.get("last_seen_version", "")
+    if seen != __version__:
+        if changelog.should_show(seen, __version__, bool(engine.cfg.get("_first_run"))):
+            win.pending_whatsnew = seen
+        with engine.cfg_lock:
+            engine.cfg["last_seen_version"] = __version__
+            engine.save()
     tray = Tray(app, engine, win)
     win.on_update_ready = tray.quit_for_update
     win.tray = tray

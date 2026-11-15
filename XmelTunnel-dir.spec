@@ -5,7 +5,7 @@ EXCLUDES = ['tkinter', 'PyQt6.QtWebEngineCore', 'PyQt6.QtWebEngineWidgets', 'PyQ
             'PyQt6.QtMultimedia', 'PyQt6.QtPdf', 'PyQt6.Qt3DCore', 'PyQt6.QtBluetooth', 'PyQt6.QtSql']
 
 a = Analysis(['xmeltunnel/__main__.py'], pathex=['.'],
-             datas=[('assets/flags', 'assets/flags'), ('assets/icon.png', 'assets')],
+             datas=[('assets/flags', 'assets/flags'), ('assets/icon.png', 'assets'), ('CHANGELOG.md', 'assets')],
              hiddenimports=['PyQt6.QtSvg'], excludes=EXCLUDES, noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name='XmelTunnel', debug=False, strip=False, upx=False,

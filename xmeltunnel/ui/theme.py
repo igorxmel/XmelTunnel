@@ -119,6 +119,7 @@ QPushButton#CaptionButton[close="true"]:hover {{ background: {c['danger']}; colo
 #section {{ color: {c['text_muted']}; font-size: 8.5pt; font-weight: 600; letter-spacing: 1px; }}
 #kvKey {{ color: {c['text_dim']}; }}
 #appName {{ font-size: 10.5pt; font-weight: 600; }}
+#ringHint {{ color: {c['text_muted']}; font-size: 8pt; }}
 #note {{ color: {c['text_muted']}; font-size: 9pt; }}
 #divider {{ background: {c['border']}; max-height: 1px; min-height: 1px; border: none; }}
 #banner {{ background: {c['danger_bg']}; border: 1px solid {c['danger']}; border-radius: 8px; }}
@@ -178,6 +179,7 @@ QScrollBar::handle:vertical:hover {{ background: {c['text_muted']}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; width: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 QPlainTextEdit {{ background: {c['surface']}; border: 1px solid {c['border_strong']}; border-radius: 6px; padding: 4px; }}
+QTextBrowser {{ background: {c['surface']}; color: {c['text']}; border: 1px solid {c['border_strong']}; border-radius: 6px; padding: 8px 12px; }}
 QComboBox {{ background: {c['surface']}; border: 1px solid {c['border_strong']}; border-radius: 6px; padding: 6px 8px; }}
 QComboBox::drop-down {{ border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center right; }}
 QComboBox::down-arrow {{ image: url({arrow}); width: 10px; height: 10px; }}

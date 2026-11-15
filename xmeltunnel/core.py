@@ -69,6 +69,7 @@ DEFAULTS = {
     "traffic": {},                      # bytes per path ("direct", "vpn", "server") and per server ("srv:<id>")                  # the servers window checks stale pings when it opens
     "sharing_used": False,              # friends have access to your server: check their limits now and then
     "check_updates": True,
+    "last_seen_version": "",            # the version «What's new» was shown for
     # app
     "theme": "system",                  # system, dark, light
     "ui_scale": 0.0,                    # 0 = as in Windows; applied at start (QT_SCALE_FACTOR)
@@ -928,7 +929,7 @@ class Engine:
         Each connection's growth since the last look is added, so closed ones are counted up to then."""
         import urllib.request
 
-        seen: dict[str, int] = {}
+        seen: dict[str, tuple[int, int]] = {}
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         saved_at = time.time()
         while self.running:
@@ -945,20 +946,25 @@ class Engine:
             alive = {}
             pick = self.cfg.get("vpn_server") or "auto"
             for c in conns:
-                cid, total = c.get("id", ""), int(c.get("upload", 0)) + int(c.get("download", 0))
-                alive[cid] = total
-                delta = total - seen.get(cid, 0)
-                if delta <= 0:
+                cid, up, down = c.get("id", ""), int(c.get("upload", 0)), int(c.get("download", 0))
+                alive[cid] = (up, down)
+                was_up, was_down = seen.get(cid, (0, 0))
+                d_up, d_down = max(up - was_up, 0), max(down - was_down, 0)
+                if not (d_up or d_down):
                     continue
                 chain = c.get("chains") or []
                 first = chain[0] if chain else ""
+                keys = []
                 if first.startswith("srv-") or "vpn" in chain:
-                    add["vpn"] = add.get("vpn", 0) + delta
+                    keys.append("vpn")
                     sid = first[4:] if first.startswith("srv-") else (pick if not pick.startswith("auto") else "")
                     if sid and self.cfg.get("vpn_source") == "servers":
-                        add["srv:" + sid] = add.get("srv:" + sid, 0) + delta
+                        keys.append("srv:" + sid)
                 elif first in ("direct", "server"):
-                    add[first] = add.get(first, 0) + delta
+                    keys.append(first)
+                for k in keys:  # the total stays for older versions; ":up" sent, ":down" received
+                    for kk, v in ((k, d_up + d_down), (k + ":up", d_up), (k + ":down", d_down)):
+                        add[kk] = add.get(kk, 0) + v
             seen = alive
             if add:
                 with self.cfg_lock:
@@ -1190,9 +1196,12 @@ class Engine:
                     self.cfg["route_enabled"] = False
                     self.save()
                 return self._route_set(status="off", error=tr("Admin rights were not given."))
+            t0 = time.time() - 1
             for _ in range(120):  # a retry after a stuck adapter takes ~20 s
                 time.sleep(0.5)
-                if routing.read_state(data).get("status") in ("running", "stopped"):
+                st = routing.read_state(data)
+                # only this helper's answer counts: "stopped" left by the last switch-off is not a failure
+                if st.get("status") in ("running", "stopped") and st.get("at", 0) > t0:
                     break
         else:
             # the helper restarts sing-box with the new config: wait for its fresh "running"
@@ -1204,7 +1213,8 @@ class Engine:
                 if st.get("status") == "stopped" or (st.get("status") == "running" and st.get("at", 0) > t0):
                     break
         st = routing.read_state(data)
-        if st.get("status") in ("starting", "restarting") and routing.helper_alive(data):
+        stale = st.get("at", 0) <= t0  # the helper has not written its own state yet
+        if (stale or st.get("status") in ("starting", "restarting")) and routing.helper_alive(data):
             # slower than we waited, but still going: not a failure; the checker sees it come up
             log("routing: still starting, waiting for the helper")
             return self._route_set(status="restarting", error="")

@@ -48,6 +48,7 @@ class SettingsPanel(QWidget):
     saved = pyqtSignal()
     reset_requested = pyqtSignal()
     remove_requested = pyqtSignal()
+    welcome_requested = pyqtSignal()
 
     FIELDS = (("server", "Server (IP, user@host or ~/.ssh/config alias)"), ("ssh_port", "SSH port"),
               ("ssh_key", "SSH key file"), ("remote_proxy_port", "Proxy port on the server"),
@@ -78,6 +79,10 @@ class SettingsPanel(QWidget):
         rm = QPushButton(tr("Remove from this PC…"), objectName="dangerSmall")
         rm.clicked.connect(self.on_remove)
         row.addWidget(rm)
+        quick = QPushButton(tr("Quick start…"))
+        quick.setToolTip(tr("The first-run window again: set up a server, a subscription or the first profile."))
+        quick.clicked.connect(self.welcome_requested.emit)
+        row.addWidget(quick)
         row.addStretch()
         cancel = QPushButton(tr("Undo changes"))
         cancel.clicked.connect(self.reset_requested.emit)

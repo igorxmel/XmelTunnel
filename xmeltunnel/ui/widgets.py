@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import sys
 
-from PyQt6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt, pyqtProperty
+import time
+
+from PyQt6.QtCore import QEasingCurve, QPointF, QPropertyAnimation, QRectF, QSize, Qt, pyqtProperty, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PyQt6.QtWidgets import QAbstractButton, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
@@ -315,20 +317,41 @@ class TargetChip(QWidget):
 
 
 class StatusRing(QAbstractButton):
-    """Big ring on the overview: colour is the state, an icon (or a glyph) inside. Click = check now."""
+    """Big ring on the overview: colour is the state, an icon (or a glyph) inside. Click = switch on / off.
+
+    Clicks while a switch is under way are dropped, not queued (as in ZapretXmel): each one is real work
+    (admin helper, SSH), and a burst of them would run one after another, ending up opposite to what was meant.
+    The ring is locked while its owner reports work in progress and for a short while after each click,
+    since the owner may not have said «busy» yet when the next click comes."""
+
+    toggle_requested = pyqtSignal()
+    COOLDOWN = 1.5
 
     def __init__(self, icon: str | None = None, size: int = 104):
         super().__init__()
         self.icon = icon
         self.setFixedSize(size, size)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(tr("Check now"))
         self.level, self.busy = "unknown", True
+        self.locked = False
+        self._cool = 0.0
+        self.clicked.connect(self._on_click)
         self._color = QColor(theme.level_color("unknown"))
         self._from = self._to = QColor(self._color)
         self._t = 1.0
         self._anim = QPropertyAnimation(self, b"t", self)
         self._anim.setDuration(300)
+
+    def _on_click(self) -> None:
+        if self.locked or time.monotonic() < self._cool:
+            return
+        self._cool = time.monotonic() + self.COOLDOWN
+        self.set_locked(True)  # the owner's next refresh says whether the work is still going
+        self.toggle_requested.emit()
+
+    def set_locked(self, locked: bool) -> None:
+        self.locked = locked
+        self.setCursor(Qt.CursorShape.BusyCursor if locked else Qt.CursorShape.PointingHandCursor)
 
     def set_level(self, level: str, busy: bool = False) -> None:
         """busy: a check is running, show an ellipsis instead of the glyph."""
@@ -358,7 +381,7 @@ class StatusRing(QAbstractButton):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         k = self.width() / 104  # everything below is laid out for 104 px
         p.scale(k, k)
-        hover = self.underMouse()
+        hover = self.underMouse() and not self.locked
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(c["surface_hover"] if hover else c["elevated"]))
         p.drawEllipse(QRectF(6, 6, 92, 92))
