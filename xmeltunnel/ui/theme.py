@@ -12,7 +12,7 @@ DARK = {
     "accent": "#f2f2f3", "accent_hover": "#ffffff", "bar": "#0e0e10",
     "danger_bg": "#2a1215", "knob": "#f2f2f3",
     # where a profile goes: your server, the VPN, direct
-    "t_server": "#6ea8ff", "t_vpn": "#b38cff", "t_direct": "#a3a3ab",
+    "t_server": "#6ea8ff", "t_vpn": "#b38cff", "t_direct": "#a3a3ab", "t_block": "#f0616d",
 }
 
 LIGHT = {
@@ -22,7 +22,7 @@ LIGHT = {
     "success": "#118a52", "danger": "#c02632", "warning": "#8a5a08", "info": "#9a9aa3",
     "accent": "#16161a", "accent_hover": "#000000", "bar": "#dfe2e8",
     "danger_bg": "#fbe9eb", "knob": "#ffffff",
-    "t_server": "#2563eb", "t_vpn": "#7c3aed", "t_direct": "#5c5c66",
+    "t_server": "#2563eb", "t_vpn": "#7c3aed", "t_direct": "#5c5c66", "t_block": "#c02632",
 }
 
 C: dict[str, str] = dict(DARK)
@@ -195,11 +195,11 @@ QCheckBox::indicator:disabled {{ background: {c['bar']}; border-color: {c['borde
 QComboBox QAbstractItemView {{ padding: 4px; outline: 0; border-radius: 8px; }}
 QComboBox QAbstractItemView::item {{ min-height: 26px; padding: 2px 8px; border-radius: 5px; }}
 QComboBox QAbstractItemView::item:selected {{ background: {c['surface_hover']}; color: {c['text']}; }}
-QTableWidget, QListWidget {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 6px;
+QTableWidget, QListWidget, QTreeWidget {{ background: {c['surface']}; border: 1px solid {c['border']}; border-radius: 6px;
                             selection-background-color: {c['surface_hover']}; selection-color: {c['text']};
                             outline: none; }}
-QTableWidget::item, QListWidget::item {{ padding: 4px 6px; border: none; }}
-QTableWidget::item:selected, QListWidget::item:selected {{ background: {c['elevated']}; }}
+QTableWidget::item, QListWidget::item, QTreeWidget::item {{ padding: 4px 6px; border: none; }}
+QTableWidget::item:selected, QListWidget::item:selected, QTreeWidget::item:selected {{ background: {c['elevated']}; }}
 QHeaderView::section {{ background: {c['surface']}; color: {c['text_dim']}; border: none;
                        border-bottom: 1px solid {c['border']}; padding: 6px; font-weight: 600; }}
 QTableCornerButton::section {{ background: {c['surface']}; border: none; }}

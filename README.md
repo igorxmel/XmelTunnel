@@ -34,13 +34,20 @@ XmelTunnel works the other way around: you write **profiles** (what goes where),
   clients show, next to the **real exit country**: a server called "Germany" sometimes exits in the
   Netherlands. The fastest server can be picked automatically, also within one country.
 - **Profiles for the whole PC.** A profile holds sites (with subdomains), programs (`Discord.exe`), folders
-  (every program inside, handy for games) and subnets. Programs and folders are more reliable than sites:
+  (every program inside, handy for games), subnets and ready-made lists. Programs and folders are more reliable than sites:
   all their traffic goes, voice and game UDP included. Presets cover AI tools, often blocked sites and more.
 - **Your server.** Over an SSH key (a tiny proxy, ~3 MB of RAM, is installed on it) or by a share link.
   No open ports: the proxy listens on `127.0.0.1` only and is reachable only through SSH.
 - **Share with friends.** "Share…" gives a friend a personal link to your server: their own port and key,
   a traffic limit and an expiry date, usage counted. Friends cannot reach the server itself, your network
   or mail ports, so nobody sends spam from your address.
+- **Ready-made lists** that update themselves: "Blocked in Russia", "Russian sites", "Ads and trackers"
+  and more. "Blocked through the VPN, the rest direct" takes one click.
+- **Blocking.** The "Block" target keeps ads, trackers and telemetry from leaving your PC at all.
+- **Connections window:** which program and site go where right now, and why. Any row can go straight
+  into a profile.
+- **Your own DNS:** DNS over HTTPS for direct sites (Cloudflare, Google, Quad9, AdGuard or your own) with an
+  automatic fallback when it does not answer, and a separate DNS for sites through the VPN.
 - **Traffic** per path and per server, received and sent separately.
 - **On top of another VPN client.** If you already run a client in TUN mode (Happ, v2rayN and the like),
   XmelTunnel can send "through the VPN" into it and games and chosen apps around it.

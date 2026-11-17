@@ -68,6 +68,10 @@ def main() -> None:
         f.write(VERSION_INFO.format(tup=tuple(nums[:4]), ver=__version__, name=APP_NAME, publisher=PUBLISHER,
                                     description=DESCRIPTION, url=URL))
     py = sys.executable
+    try:  # a Python without PyQt6 builds an exe that dies at start («DLL load failed while importing QtCore»)
+        import PyQt6.QtCore  # noqa: F401
+    except ImportError:
+        sys.exit(f"{py} has no PyQt6: run the build with .venv\\Scripts\\python build.py")
     for spec in ("XmelTunnel.spec", "XmelTunnel-dir.spec"):
         subprocess.run([py, "-m", "PyInstaller", "-y", "--log-level", "WARN", spec], check=True)
     sha256("dist/XmelTunnel.exe")

@@ -66,6 +66,7 @@ class SettingsPanel(QWidget):
         lay.setSpacing(10)
         self.tabs = QTabWidget()
         self.tabs.addTab(self._scrolled(self._server_page(cfg)), tr("Server"))
+        self.tabs.addTab(self._scrolled(self._dns_page(cfg)), tr("DNS"))
         self.tabs.addTab(self._scrolled(self._app_page(cfg)), tr("App"))
         lay.addWidget(self.tabs, 1)
 
@@ -291,6 +292,88 @@ class SettingsPanel(QWidget):
 
         run_bg(self, lambda: server_setup.install_ss(cfg, port), done)
 
+    def _dns_page(self, cfg: dict) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(4, 14, 4, 4)
+        lay.setSpacing(8)
+        intro = QLabel(tr("Which servers turn site names into addresses while the VPN is connected. Direct names go "
+                          "by DNS over HTTPS: providers cannot see or change them, and VPN clients do not block it."),
+                       objectName="note")
+        intro.setWordWrap(True)
+        lay.addWidget(intro)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(8)
+
+        def pick(value: str, custom_hint: str) -> tuple[QComboBox, QLineEdit]:
+            c = QComboBox()
+            for key, (title, ip) in routing.DNS_PRESETS.items():
+                c.addItem(f"{title}  ({ip})", key)
+            c.addItem(tr("Your own…"), "custom")
+            e = QLineEdit()
+            e.setPlaceholderText(custom_hint)
+            if value in routing.DNS_PRESETS:
+                c.setCurrentIndex(c.findData(value))
+            else:
+                c.setCurrentIndex(c.findData("custom"))
+                e.setText(value)
+            e.setVisible(c.currentData() == "custom")
+            c.currentIndexChanged.connect(lambda: e.setVisible(c.currentData() == "custom"))
+            return c, e
+
+        self.dns_direct, self.dns_direct_own = pick(cfg.get("dns_direct") or "cloudflare",
+                                                    "https://dns.example.com/dns-query")
+        self.dns_remote, self.dns_remote_own = pick(cfg.get("dns_remote") or "cloudflare", "1.2.3.4")
+        rows = ((tr("Direct"), self.dns_direct, self.dns_direct_own,
+                 tr("For sites that go direct. If this server is slow or cut where you are, everything direct is slow.")),
+                (tr("Through the VPN and your server"), self.dns_remote, self.dns_remote_own,
+                 tr("Asked on the far side of the tunnel, so the answer fits the country you exit in.")))
+        r = 0
+        for label, combo_, own, note in rows:
+            grid.addWidget(QLabel(label, objectName="formLabel"), r, 0)
+            grid.addWidget(combo_, r, 1)
+            grid.addWidget(own, r + 1, 1)
+            n = QLabel(note, objectName="note")
+            n.setWordWrap(True)
+            grid.addWidget(n, r + 2, 1)
+            r += 3
+        grid.setColumnStretch(1, 1)
+        lay.addLayout(grid)
+        self.dns_fallback = QCheckBox(tr("If the chosen server does not answer, take another one by itself"))
+        self.dns_fallback.setChecked(bool(cfg.get("dns_fallback", True)))
+        lay.addWidget(self.dns_fallback)
+        used = self.engine.state["route"].get("dns")
+        if used and used != (cfg.get("dns_direct") or "cloudflare"):
+            title = routing.DNS_PRESETS.get(used, (used,))[0]
+            w = QLabel(tr("The chosen server did not answer at the last connect: {name} is used instead.", name=title),
+                       objectName="warnNote")
+            w.setWordWrap(True)
+            lay.addWidget(w)
+        ad = QLabel(tr("AdGuard also drops ads and trackers by itself. For finer control use a profile with the "
+                       "«Ads and trackers» list and «Block»."), objectName="note")
+        ad.setWordWrap(True)
+        lay.addWidget(ad)
+        lay.addStretch()
+        return page
+
+    def dns_values(self) -> tuple[dict | None, str]:
+        def value(combo_: QComboBox, own: QLineEdit, kind: str) -> str | None:
+            if combo_.currentData() != "custom":
+                return combo_.currentData()
+            text = own.text().strip()
+            if kind == "doh":
+                return text if re.match(r"^https://[^\s/]+(/\S*)?$", text) else None
+            return text if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", text) else None
+
+        direct = value(self.dns_direct, self.dns_direct_own, "doh")
+        remote = value(self.dns_remote, self.dns_remote_own, "ip")
+        if not direct:
+            return None, tr("DNS for direct: an address like https://dns.example.com/dns-query.")
+        if not remote:
+            return None, tr("DNS through the VPN: an IP address like 1.2.3.4.")
+        return {"direct": direct, "remote": remote, "fallback": self.dns_fallback.isChecked()}, ""
+
     def _app_page(self, cfg: dict) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
@@ -441,6 +524,10 @@ class SettingsPanel(QWidget):
         if new is None:
             self.tabs.setCurrentIndex(0)
             return
+        dns, dns_err = self.dns_values()
+        if dns is None:
+            self.tabs.setCurrentIndex(1)
+            return self.say(dns_err, False)
         values = self.app_values()
         if values["route_no_uac"] != bool(self.engine.cfg.get("route_no_uac")):
             self.say(tr("Waiting for the admin rights prompt…"), None)
@@ -450,6 +537,7 @@ class SettingsPanel(QWidget):
         try:
             self.engine.apply_app_settings(values)
             self.engine.apply_settings(new)
+            self.engine.set_dns(dns["direct"], dns["remote"], dns["fallback"])
         except OSError as e:
             return self.say(str(e), False)
         self.say(tr("Saved."), True)
@@ -471,8 +559,9 @@ def running_programs() -> list[tuple[str, str]]:
     return sorted(seen.values(), key=lambda x: x[0].lower())
 
 
-TARGET_TITLES = (("server", "Through your server"), ("vpn", "Through the VPN"), ("direct", "Direct"))
-TARGET_SHORT = (("server", "Server"), ("vpn", "VPN"), ("direct", "Direct"))
+TARGET_TITLES = (("server", "Through your server"), ("vpn", "Through the VPN"), ("direct", "Direct"),
+                 ("block", "Block"))
+TARGET_SHORT = (("server", "Server"), ("vpn", "VPN"), ("direct", "Direct"), ("block", "Blocked"))
 
 
 class ProfileDialog(FramelessDialog):
@@ -496,7 +585,7 @@ class ProfileDialog(FramelessDialog):
         if self.is_new:
             grid.addWidget(QLabel(tr("Start from a preset"), objectName="formLabel"), r, 0)
             self.preset = QComboBox()
-            shown = [(tr(p["name"]) if p["id"] in ("custom", "blocked") else p["name"], p["id"]) for p in profiles.PRESETS]
+            shown = [(tr(p["name"]) if p["id"] in profiles.TRANSLATED else p["name"], p["id"]) for p in profiles.PRESETS]
             custom = [x for x in shown if x[1] == "custom"]
             for title, pid in custom + sorted((x for x in shown if x[1] != "custom"), key=lambda x: x[0].lower()):
                 self.preset.addItem(title, pid)
@@ -519,7 +608,8 @@ class ProfileDialog(FramelessDialog):
 
         lay.addWidget(QLabel(tr("What goes"), objectName="formLabel"))
         hint = QLabel(tr("One entry per line: a site (subdomains included), a program (name.exe), a folder "
-                         "(every program inside it) or an IP/subnet. # starts a comment."), objectName="note")
+                         "(every program inside it), an IP/subnet or a ready-made list (list:…). # starts a comment."),
+                      objectName="note")
         hint.setWordWrap(True)
         lay.addWidget(hint)
         self.entries = QPlainTextEdit()
@@ -530,7 +620,7 @@ class ProfileDialog(FramelessDialog):
         adds = QHBoxLayout()
         adds.setSpacing(8)
         for text, fn in ((tr("+ Program…"), self.add_program), (tr("+ Folder…"), self.add_folder),
-                         (tr("+ Running…"), self.add_running)):
+                         (tr("+ Running…"), self.add_running), (tr("+ List…"), self.add_list)):
             b = QPushButton(text, objectName="small")
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.clicked.connect(fn)
@@ -571,7 +661,7 @@ class ProfileDialog(FramelessDialog):
             self.profile["target"] = "vpn"  # no server of your own: «through your server» would just not work
         if self.profile["id"] == "custom":
             self.profile["name"] = tr("New profile")
-        elif self.profile["id"] == "blocked":
+        elif self.profile["id"] in profiles.TRANSLATED:
             self.profile["name"] = tr(self.profile["name"])
         self.show_profile()
 
@@ -586,10 +676,13 @@ class ProfileDialog(FramelessDialog):
     def show_hint(self) -> None:
         target = self.target.currentData()
         parsed = routing.parse_list(self.entries.toPlainText().splitlines())
-        if target != "server":
+        if target == "block":
+            text = tr("Refused: the sites do not open, the programs get no internet. Works while the VPN is connected.")
+        elif target != "server":
             text = tr("Works while the VPN is connected.")
-        elif parsed["procs"] or parsed["folders"] or parsed["cidrs"]:
-            text = tr("Sites go through your server always; programs, folders and subnets — while the VPN is connected.")
+        elif parsed["procs"] or parsed["folders"] or parsed["cidrs"] or parsed["lists"]:
+            text = tr("Sites go through your server always; programs, folders, subnets and lists — while the VPN is "
+                      "connected.")
         else:
             text = tr("Sites go through your server always, no admin rights needed.")
         self.mode_hint.setText(text)
@@ -598,7 +691,7 @@ class ProfileDialog(FramelessDialog):
 
     def _append(self, line: str) -> None:
         lines = self.entries.toPlainText().splitlines()
-        if line.lower() in (ln.split("#", 1)[0].strip().lower() for ln in lines):
+        if line.split("#", 1)[0].strip().lower() in (ln.split("#", 1)[0].strip().lower() for ln in lines):
             return
         while lines and not lines[-1].strip():
             lines.pop()
@@ -616,6 +709,16 @@ class ProfileDialog(FramelessDialog):
         path = QFileDialog.getExistingDirectory(self, tr("Choose a folder: every program inside it"))
         if path:
             self._append(path.replace("/", "\\").rstrip("\\") + "\\")
+
+    def add_list(self) -> None:
+        menu = QMenu(self)
+        for lid, meta in routing.LISTS.items():
+            a = QAction(tr(meta["title"]), menu)
+            a.setToolTip(tr(meta["note"]))
+            a.triggered.connect(lambda _=False, i=lid, t=meta["title"]: self._append(f"list:{i}  # {tr(t)}"))
+            menu.addAction(a)
+        menu.setToolTipsVisible(True)
+        menu.exec(QCursor.pos())
 
     def add_running(self) -> None:
         menu = QMenu(self)
@@ -640,7 +743,7 @@ class ProfileDialog(FramelessDialog):
         if parsed["bad"]:
             return self.err.setText(tr("Not understood: {items}", items=", ".join(parsed["bad"][:5])))
         if not routing.has_items(lines):
-            return self.err.setText(tr("Add at least one site, program or folder."))
+            return self.err.setText(tr("Add at least one site, program, folder or list."))
         p = self.profile
         p["name"] = self.name.text().strip() or p["name"]
         p["target"] = self.target.currentData()

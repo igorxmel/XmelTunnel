@@ -66,6 +66,10 @@ DEFAULTS = {
     "server_checks": {},                # server id -> last check result
     "servers_via_adapter": False,       # reach these servers through the VPN client's adapter
     "ping_auto": True,
+    # DNS: direct names by DNS over HTTPS (a preset of routing.DNS_PRESETS or https://…), the rest inside the tunnel
+    "dns_direct": "cloudflare",
+    "dns_remote": "cloudflare",
+    "dns_fallback": True,               # the chosen DoH does not answer at connect: take the first that does
     "traffic": {},                      # bytes per path ("direct", "vpn", "server") and per server ("srv:<id>")                  # the servers window checks stale pings when it opens
     "sharing_used": False,              # friends have access to your server: check their limits now and then
     "check_updates": True,
@@ -681,7 +685,7 @@ class Engine:
                       "exit_ms": None, "exit_at": 0, "checking": False, "since": None,
                       "apps": {}, "pac": pac_installed(self.cfg), "autostart": autostart_enabled(),
                       "route": {"status": "off", "error": "", "progress": 0, "checks": {}, "checking": False,
-                                "phys": None, "vpn": None},
+                                "phys": None, "vpn": None, "dns": None},
                       "servers": {"checking": False, "done": 0, "total": 0, "error": "", "updating": False},
                       "update": {"version": None, "status": "idle", "progress": 0, "error": "", "path": "",
                                  "kind": updater.kind(), "checked_at": 0}}
@@ -833,7 +837,7 @@ class Engine:
         PacHandler.body = pac_text(self.cfg).encode()
         for target in (self._serve_pac, self._tunnel, self._exit_checker, self._monitor, self._route_checker,
                        self._update_checker, self._subscription_updater,
-                       self._traffic_counter):
+                       self._traffic_counter, self._list_updater):
             threading.Thread(target=logged(target), daemon=True).start()
         if routing.helper_alive(data_dir()) or (self.cfg["route_enabled"] and self.cfg["route_on_start"]):
             self._route_bg(self._route_start)  # take over a running helper or start as the user left it
@@ -1153,6 +1157,86 @@ class Engine:
         if self.cfg["route_enabled"]:
             self._route_bg(self._route_start)
 
+    def _pick_dns(self, cfg: dict, alive: bool) -> str:
+        """The DoH server for direct names: the chosen one, or with «fallback» the first preset that answers.
+        While sing-box runs the check goes through its direct path, so it sees what sing-box would."""
+        chosen = cfg.get("dns_direct") or "cloudflare"
+        if not cfg.get("dns_fallback", True):
+            return chosen
+        proxy = f"http://127.0.0.1:{routing.CHECK_PORTS['direct']}" if alive else None
+        for cand in [chosen] + [k for k in routing.DNS_PRESETS if k != chosen]:
+            if routing.doh_works(cand, proxy):
+                if cand != chosen:
+                    log(f"dns: {chosen} does not answer, using {cand}")
+                self._route_set(dns=cand)
+                return cand
+        self._route_set(dns=chosen)
+        return chosen  # nothing answers: the network is down, keep the choice
+
+    def _list_updater(self) -> None:
+        """Ready-made lists of enabled profiles: refreshed once a day. sing-box reloads a changed file
+        by itself; a list that was missing at connect needs a restart to be taken in."""
+        time.sleep(60)
+        while self.running:
+            wanted = routing.used_lists(self.cfg)
+            if wanted:
+                data = data_dir()
+                before = set(routing.lists_ready(data, wanted))
+                running = self.state["route"]["status"] == "running"
+                proxy = f"http://127.0.0.1:{routing.CHECK_PORTS['vpn']}" if running else None
+                for err in routing.download_lists(data, wanted, proxy=proxy):
+                    log(f"lists: {err}")
+                if running and set(routing.lists_ready(data, wanted)) - before and self.cfg["route_enabled"]:
+                    self._route_bg(self._route_start)
+            for _ in range(3600):
+                if not self.running:
+                    return
+                time.sleep(1)
+
+    def connections(self) -> list[dict]:
+        """sing-box's live connections (clash API), for the «Connections» window. [] when it is not running."""
+        import urllib.request
+
+        if self.state["route"]["status"] != "running":
+            return []
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(f"http://127.0.0.1:{routing.STATS_PORT}/connections", timeout=3) as r:
+                return json.loads(r.read().decode()).get("connections") or []
+        except Exception:  # noqa: BLE001
+            return []
+
+    def close_connection(self, cid: str) -> None:
+        import urllib.request
+
+        req = urllib.request.Request(f"http://127.0.0.1:{routing.STATS_PORT}/connections/{cid}", method="DELETE")
+        try:
+            urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=3).close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def add_entry(self, pid: str, line: str) -> bool:
+        """Append a line to a profile (from the «Connections» window). False if it is already there."""
+        with self.cfg_lock:
+            p = next((x for x in self.cfg["profiles"] if x["id"] == pid), None)
+            if not p:
+                return False
+            have = {ln.split("#", 1)[0].strip().lower() for ln in p["entries"]}
+            if line.lower() in have:
+                return False
+            p = dict(p, entries=p["entries"] + [line])
+        self.upsert_profile(profiles.normalize(p))
+        return True
+
+    def set_dns(self, direct: str, remote: str, fallback: bool) -> None:
+        with self.cfg_lock:
+            changed = (direct, remote, fallback) != (self.cfg.get("dns_direct"), self.cfg.get("dns_remote"),
+                                                     self.cfg.get("dns_fallback"))
+            self.cfg.update(dns_direct=direct, dns_remote=remote, dns_fallback=fallback)
+            self.save()
+        if changed and self.cfg["route_enabled"]:
+            self._route_bg(self._route_start)
+
     def _route_start(self) -> None:
         data = data_dir()
         with self.cfg_lock:
@@ -1177,7 +1261,18 @@ class Engine:
         if "noserver" in bad:
             return self._route_set(status="error",
                                    error=tr("Your server part is not installed: Lists… → Install on the server."))
-        conf = routing.build_config(cfg, self.ip, phys, vpn)
+        alive = routing.helper_alive(data)
+        wanted = routing.used_lists(cfg)
+        # missing lists now (the rest is refreshed in the background); a failed one is skipped, and not
+        # waited for again for 10 minutes: every profile switch would otherwise stall on it
+        if wanted and time.time() - getattr(self, "_lists_failed_at", 0) > 600:
+            proxy = f"http://127.0.0.1:{routing.CHECK_PORTS['vpn']}" if alive else None
+            errors = routing.download_lists(data, wanted, proxy=proxy, max_age=10 ** 9, timeout=12)
+            for err in errors:
+                log(f"lists: {err}")
+            self._lists_failed_at = time.time() if errors else 0
+        cfg["dns_direct_used"] = self._pick_dns(cfg, alive)
+        conf = routing.build_config(cfg, self.ip, phys, vpn, routing.lists_ready(data, wanted))
         servers.place_endpoints(conf)
         # placeholder addresses survive a restart: apps keep using the ones they got
         conf["experimental"]["cache_file"] = {"enabled": True, "store_fakeip": True,
@@ -1189,7 +1284,6 @@ class Engine:
                 same = f.read() == body
         except OSError:
             same = False
-        alive = routing.helper_alive(data)
         if same and alive and routing.read_state(data).get("status") == "running":
             # nothing changed for sing-box (a theme, a PAC-only profile…): no restart, no outage
             self._route_set(status="running", error="", phys=phys, vpn=vpn)

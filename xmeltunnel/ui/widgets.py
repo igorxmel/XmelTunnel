@@ -208,6 +208,9 @@ def draw_icon(p: QPainter, kind: str, r: QRectF, color: QColor, width: float = 2
         body.closeSubpath()
         p.drawPath(body)
         p.drawLine(QPointF(x + w * 0.58, y + h * 0.28), QPointF(x + w * 0.72, y + h * 0.42))
+    elif kind == "block":  # a circle crossed out
+        p.drawEllipse(QRectF(x + w * 0.10, y + h * 0.10, w * 0.80, h * 0.80))
+        p.drawLine(QPointF(x + w * 0.24, y + h * 0.76), QPointF(x + w * 0.76, y + h * 0.24))
     else:  # direct: an arrow straight ahead
         p.drawLine(QPointF(x + w * 0.10, y + h * 0.5), QPointF(x + w * 0.88, y + h * 0.5))
         head = QPainterPath(QPointF(x + w * 0.58, y + h * 0.20))
@@ -217,7 +220,7 @@ def draw_icon(p: QPainter, kind: str, r: QRectF, color: QColor, width: float = 2
     p.restore()
 
 
-TARGET_ICON = {"server": "server", "vpn": "shield", "direct": "direct"}
+TARGET_ICON = {"server": "server", "vpn": "shield", "direct": "direct", "block": "block"}
 
 
 class IconButton(QAbstractButton):

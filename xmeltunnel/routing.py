@@ -115,12 +115,169 @@ def download_sing_box(data: str, progress=None) -> None:
 
 # ---------- lists and config ----------
 
+# Ready-made lists (sing-box rule sets), rebuilt every day by runetfreedom/russia-v2ray-rules-dat from
+# antifilter, re:filter, v2fly and others. A profile holds one as a line «list:<id>».
+LISTS_URL = "https://raw.githubusercontent.com/runetfreedom/russia-v2ray-rules-dat/release/sing-box/"
+LISTS = {
+    "ru-blocked": {"title": "Blocked in Russia", "geosite": "ru-blocked", "geoip": "ru-blocked",
+                   "note": "Sites and addresses blocked or slowed down in Russia, updated every day."},
+    "ru-inside": {"title": "Open only from Russia", "geosite": "ru-available-only-inside",
+                  "note": "Russian services that refuse foreign addresses: banks, Gosuslugi and others."},
+    "ru": {"title": "Russian sites", "geosite": "category-ru", "geoip": "ru",
+           "note": "Sites in .ru, .рф and other Russian zones and Russian IP addresses."},
+    "ads": {"title": "Ads and trackers", "geosite": "category-ads-all",
+            "note": "Ad and tracking domains (v2fly category-ads-all)."},
+    "win-spy": {"title": "Windows telemetry", "geosite": "win-spy",
+                "note": "Microsoft's telemetry servers."},
+}
+LISTS_MAX_AGE = 24 * 3600
+
+
+def lists_dir(data: str) -> str:
+    path = os.path.join(route_dir(data), "lists")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def list_rule_sets(lid: str) -> list[tuple[str, str]]:
+    """(tag, url path) of the rule sets behind a list: its domains (geosite) and its addresses (geoip)."""
+    meta = LISTS.get(lid) or {}
+    out = []
+    for kind in ("geosite", "geoip"):
+        if meta.get(kind):
+            tag = f"{kind}-{meta[kind]}"
+            out.append((tag, f"rule-set-{kind}/{tag}.srs"))
+    return out
+
+
+def lists_ready(data: str, ids) -> dict[str, str]:
+    """{rule set tag: file} of the lists already downloaded. Missing ones are left out of the config."""
+    out = {}
+    for lid in ids:
+        for tag, _ in list_rule_sets(lid):
+            path = os.path.join(lists_dir(data), tag + ".srs")
+            if os.path.isfile(path):
+                out[tag] = path
+    return out
+
+
+def download_lists(data: str, ids, proxy: str | None = None, max_age: int = LISTS_MAX_AGE,
+                   timeout: float = 30) -> list[str]:
+    """Fetch the lists older than max_age. Returns errors. Directly first, then through proxy (the VPN path),
+    since raw.githubusercontent.com is slow or cut in some places."""
+    errors = []
+    for lid in ids:
+        for tag, rel in list_rule_sets(lid):
+            path = os.path.join(lists_dir(data), tag + ".srs")
+            try:
+                if time.time() - os.path.getmtime(path) < max_age:
+                    continue
+            except OSError:
+                pass
+            last = None
+            for via in [None] + ([proxy] if proxy else []):
+                handlers = [urllib.request.ProxyHandler({"http": via, "https": via} if via else {})]
+                try:
+                    req = urllib.request.Request(LISTS_URL + rel, headers={"User-Agent": "XmelTunnel"})
+                    with urllib.request.build_opener(*handlers).open(req, timeout=timeout) as r:
+                        body = r.read(64 << 20)
+                    if body[:3] != b"SRS":
+                        raise ValueError("not a sing-box rule set")
+                    with open(path + ".tmp", "wb") as f:
+                        f.write(body)
+                    os.replace(path + ".tmp", path)  # sing-box reloads a local rule set when its file changes
+                    last = None
+                    break
+                except Exception as e:  # noqa: BLE001
+                    last = e
+            if last:
+                errors.append(f"{tag}: {last!r}")
+    return errors
+
+
+def used_lists(cfg: dict) -> list[str]:
+    """Ids of the lists in enabled profiles."""
+    out = []
+    for p in cfg.get("profiles") or []:
+        if p.get("enabled"):
+            for lid in parse_list(p.get("entries", []))["lists"]:
+                if lid not in out:
+                    out.append(lid)
+    return out
+
+
+# DNS. Direct names go by DNS over HTTPS (VPN clients block port 53 outside their adapter); names that
+# leave through the VPN or your server are resolved on the far side over plain DNS inside the tunnel.
+DNS_PRESETS = {
+    "cloudflare": ("Cloudflare", "1.1.1.1"),
+    "google": ("Google", "8.8.8.8"),
+    "quad9": ("Quad9", "9.9.9.9"),
+    "adguard": ("AdGuard", "94.140.14.14"),
+}
+
+
+def doh_server(value: str) -> dict:
+    """«cloudflare» or «https://dns.example/dns-query» -> sing-box https server fields."""
+    if value in DNS_PRESETS:
+        return {"server": DNS_PRESETS[value][1]}
+    m = re.match(r"^(?:https://)?([^/:]+)(?::(\d+))?(/.*)?$", value.strip())
+    if not m:
+        return {"server": DOH_SERVER}
+    out = {"server": m.group(1)}
+    if m.group(2):
+        out["server_port"] = int(m.group(2))
+    if m.group(3) and m.group(3) != "/dns-query":
+        out["path"] = m.group(3)
+    try:
+        ipaddress.ip_address(m.group(1))
+    except ValueError:
+        out["domain_resolver"] = "dns-boot"  # a name needs an address first
+    return out
+
+
+def plain_dns(value: str) -> str:
+    """«google» or «8.8.8.8» -> the address for DNS inside the tunnel."""
+    if value in DNS_PRESETS:
+        return DNS_PRESETS[value][1]
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return "1.1.1.1"
+
+
+def doh_url(value: str) -> str:
+    f = doh_server(value)
+    return f"https://{f['server']}{':%d' % f['server_port'] if 'server_port' in f else ''}{f.get('path', '/dns-query')}"
+
+
+def doh_works(value: str, proxy: str | None = None, timeout: float = 4) -> bool:
+    """Does this DNS over HTTPS server answer at all? Any HTTP answer counts: some want HTTP/2 (Quad9)."""
+    import base64
+    import struct
+    import urllib.error
+
+    query = struct.pack(">HHHHHH", 0x5854, 0x0100, 1, 0, 0, 0) + b"\x07example\x03com\x00" + struct.pack(">HH", 1, 1)
+    url = doh_url(value) + "?dns=" + base64.urlsafe_b64encode(query).decode().rstrip("=")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": proxy, "https": proxy} if proxy else {}))
+    try:
+        with opener.open(urllib.request.Request(url, headers={"Accept": "application/dns-message"}), timeout=timeout) as r:
+            return r.read(2) != b""
+    except urllib.error.HTTPError:
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def parse_list(lines: list[str]) -> dict:
-    """Lines -> {"procs", "folders", "domains", "cidrs", "bad"}. '#' starts a comment."""
-    out = {"procs": [], "folders": [], "domains": [], "cidrs": [], "bad": []}
+    """Lines -> {"procs", "folders", "domains", "cidrs", "lists", "bad"}. '#' starts a comment."""
+    out = {"procs": [], "folders": [], "domains": [], "cidrs": [], "lists": [], "bad": []}
     for raw in lines:
         item = raw.split("#", 1)[0].strip()
         if not item:
+            continue
+        if item.lower().startswith("list:"):
+            lid = item[5:].strip().lower()
+            (out["lists"] if lid in LISTS else out["bad"]).append(lid if lid in LISTS else item)
             continue
         if "\\" in item or "%" in item or re.match(r"^[a-zA-Z]:/", item):
             path = os.path.expandvars(item).replace("/", "\\").rstrip("\\") + "\\"
@@ -141,17 +298,27 @@ def parse_list(lines: list[str]) -> dict:
     return out
 
 
-def _rules(parsed: dict, outbound: str) -> list[dict]:
+def _tags(parsed: dict, ready: dict, kind: str | None = None) -> list[str]:
+    """Rule set tags of the parsed lists that are downloaded; kind "geosite" = only their domain parts."""
+    return [t for lid in parsed["lists"] for t, _ in list_rule_sets(lid)
+            if t in ready and (kind is None or t.startswith(kind + "-"))]
+
+
+def _rules(parsed: dict, outbound: str, ready: dict | None = None) -> list[dict]:
+    """Route rules of one target. outbound «block» means the connection is refused."""
+    then = {"action": "reject"} if outbound == "block" else {"outbound": outbound}
     rules = []
     if parsed["folders"]:
-        rules.append({"process_path_regex": ["(?i)^" + re.escape(p) for p in parsed["folders"]],
-                      "outbound": outbound})
+        rules.append({"process_path_regex": ["(?i)^" + re.escape(p) for p in parsed["folders"]], **then})
     if parsed["procs"]:
-        rules.append({"process_name": parsed["procs"], "outbound": outbound})
+        rules.append({"process_name": parsed["procs"], **then})
     if parsed["domains"]:
-        rules.append({"domain_suffix": parsed["domains"], "outbound": outbound})
+        rules.append({"domain_suffix": parsed["domains"], **then})
     if parsed["cidrs"]:
-        rules.append({"ip_cidr": parsed["cidrs"], "outbound": outbound})
+        rules.append({"ip_cidr": parsed["cidrs"], **then})
+    tags = _tags(parsed, ready or {})
+    if tags:
+        rules.append({"rule_set": tags, **then})
     return rules
 
 
@@ -202,22 +369,25 @@ def _server_link(cfg: dict) -> dict | None:
 
 def lists_by_target(cfg: dict) -> dict[str, list[str]]:
     """Entries of the enabled profiles, joined per target."""
-    out = {"direct": [], "server": [], "vpn": []}
+    out = {"block": [], "direct": [], "server": [], "vpn": []}
     for p in cfg["profiles"]:
         if p.get("enabled") and p.get("target") in out:
             out[p["target"]] += p.get("entries", [])
     return out
 
 
-def build_config(cfg: dict, server_ip: str, phys: str, vpn: str | None) -> dict:
+def build_config(cfg: dict, server_ip: str, phys: str, vpn: str | None, ready: dict | None = None) -> dict:
     """sing-box config for the routing mode. Pure: tests call it directly.
 
     phys: the normal adapter (direct traffic), vpn: the VPN client's adapter or None.
+    ready: {rule set tag: file} of the downloaded lists (lists_ready); the others are skipped for now.
     """
+    ready = ready or {}
     lists = lists_by_target(cfg)
     via_vpn = parse_list(lists["vpn"])
     via_srv = parse_list(lists["server"])
     via_dir = parse_list(lists["direct"])
+    via_blk = parse_list(lists["block"])
     default = cfg.get("route_default") or "direct"  # where everything not listed goes
     link = _server_link(cfg)
     has_server = bool(link) or (bool(cfg.get("ss_key")) and bool(server_ip))
@@ -248,7 +418,9 @@ def build_config(cfg: dict, server_ip: str, phys: str, vpn: str | None) -> dict:
                  # Two /1 halves beat a VPN client's own default route, whatever its metric. IPv6 is taken
                  # too: otherwise it would slip past the lists into the VPN client (or out directly).
                  "route_address": ["0.0.0.0/1", "128.0.0.0/1", "::/1", "8000::/1"],
-                 "mtu": 1400, "auto_route": True, "strict_route": False, "stack": "mixed"}]
+                 # strict_route: Windows asks every adapter's DNS at once (the router too, by a route more
+                 # specific than ours); sing-box's firewall rules stop those queries going around the adapter
+                 "mtu": 1400, "auto_route": True, "strict_route": True, "stack": "mixed"}]
     for name, port in CHECK_PORTS.items():  # local proxies the app uses to check each path
         inbounds.append({"type": "mixed", "tag": f"check-{name}", "listen": "127.0.0.1", "listen_port": port})
 
@@ -262,48 +434,61 @@ def build_config(cfg: dict, server_ip: str, phys: str, vpn: str | None) -> dict:
     # an entry in several lists: the first wins, in this order
     # Without the Shadowsocks part, server profiles keep working for sites through the PAC file
     # (their traffic reaches 127.0.0.1, not this adapter), so they get no rules here.
-    rules += _rules(via_dir, "direct") + (_rules(via_srv, "server") if has_server else []) + _rules(via_vpn, "vpn")
+    # «block» first: an ad domain stays blocked even if a wider list sends its site through the VPN
+    rules += (_rules(via_blk, "block", ready) + _rules(via_dir, "direct", ready)
+              + (_rules(via_srv, "server", ready) if has_server else []) + _rules(via_vpn, "vpn", ready))
 
     # FakeIP for whatever may leave through the VPN or your server: apps get a placeholder address, and the
     # outbound receives the site's NAME, not an IP we resolved here. Servers route by names (Quattro sends
     # Google/Gemini through Cloudflare), so a bare IP made Gemini come from a datacenter address it refuses.
     # Throne and other sing-box clients behave the same way. Direct traffic resolves names normally.
+    def by_name(parsed: dict, then: dict) -> list[dict]:
+        out = [dict(then, domain_suffix=parsed["domains"])] if parsed["domains"] else []
+        tags = _tags(parsed, ready, "geosite")  # only domain lists: address lists mean nothing to DNS
+        return out + ([dict(then, rule_set=tags)] if tags else [])
+
     fake = {"query_type": ["A", "AAAA"], "server": "fakeip"}
+    dns_rules = by_name(via_blk, {"action": "reject"})  # blocked names do not even resolve
     if default == "direct":
-        listed = (via_srv["domains"] if has_server else []) + via_vpn["domains"]
-        dns_rules = [dict(fake, domain_suffix=listed)] if listed else []
+        dns_rules += by_name(via_srv, fake) if has_server else []
+        dns_rules += by_name(via_vpn, fake)
         dns_final = "dns-local"
     else:
-        dns_rules = [{"domain_suffix": via_dir["domains"], "server": "dns-local"}] if via_dir["domains"] else []
+        dns_rules += by_name(via_dir, {"server": "dns-local"})
         dns_rules.append(fake)
         dns_final = "dns-remote"
+    local = {"type": "https", "tag": "dns-local", "detour": "direct",
+             **doh_server(cfg.get("dns_direct_used") or cfg.get("dns_direct") or "cloudflare")}
+    dns_servers = [
+        # DNS over HTTPS: VPN clients (Happ and others) block port 53 outside their adapter
+        # to stop DNS leaks, so plain DNS on the normal adapter would just time out.
+        local,
+        # listed sites are resolved on the far side, so the answer fits the exit
+        {"type": "udp", "tag": "dns-remote", "server": plain_dns(cfg.get("dns_remote") or "cloudflare"),
+         "detour": "vpn" if vpn else ("server" if has_server else "direct")},
+        # IPv4 only: an IPv6 range would fall into fc00::/7, which counts as a private address
+        {"type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15"},
+    ]
+    if local.get("domain_resolver"):  # your own DoH by name: its address comes from Google's DoH
+        dns_servers.append({"type": "https", "tag": "dns-boot", "server": "8.8.8.8", "detour": "direct"})
+    # find_process: every connection carries its program, also without process rules (the «Connections» window)
+    route = {"rules": rules, "final": default, "default_domain_resolver": "dns-local", "find_process": True}
+    tags = sorted({t for r in rules for t in r.get("rule_set", [])})
+    if tags:
+        route["rule_set"] = [{"type": "local", "tag": t, "format": "binary", "path": ready[t]} for t in tags]
     return {
         "log": {"level": "warn", "timestamp": True},
-        "dns": {
-            "servers": [
-                # DNS over HTTPS: VPN clients (Happ and others) block port 53 outside their adapter
-                # to stop DNS leaks, so plain DNS on the normal adapter would just time out.
-                {"type": "https", "tag": "dns-local", "server": DOH_SERVER, "detour": "direct"},
-                # listed sites are resolved on the far side, so the answer fits the exit
-                {"type": "udp", "tag": "dns-remote", "server": "1.1.1.1",
-                 "detour": "vpn" if vpn else ("server" if has_server else "direct")},
-                # IPv4 only: an IPv6 range would fall into fc00::/7, which counts as a private address
-                {"type": "fakeip", "tag": "fakeip", "inet4_range": "198.18.0.0/15"},
-            ],
-            "rules": dns_rules,
-            "final": dns_final,
-            "strategy": "ipv4_only",
-        },
+        "dns": {"servers": dns_servers, "rules": dns_rules, "final": dns_final, "strategy": "ipv4_only"},
         "inbounds": inbounds,
         "outbounds": outbounds,
-        "route": {"rules": rules, "final": default, "default_domain_resolver": "dns-local"},
+        "route": route,
         "experimental": {"clash_api": {"external_controller": f"127.0.0.1:{STATS_PORT}"}},
     }
 
 
 def has_items(lines: list[str]) -> bool:
     p = parse_list(lines)
-    return any(p[k] for k in ("procs", "folders", "domains", "cidrs"))
+    return any(p[k] for k in ("procs", "folders", "domains", "cidrs", "lists"))
 
 
 def problems(cfg: dict, vpn: str | None) -> list[str]:
@@ -313,7 +498,7 @@ def problems(cfg: dict, vpn: str | None) -> list[str]:
     srv = parse_list(lists["server"])
     wants_vpn = has_items(lists["vpn"]) or default == "vpn"
     # server sites alone work through the PAC file; programs, folders and subnets need Shadowsocks
-    wants_server = bool(srv["procs"] or srv["folders"] or srv["cidrs"]) or default == "server"
+    wants_server = bool(srv["procs"] or srv["folders"] or srv["cidrs"] or srv["lists"]) or default == "server"
     out = []
     if cfg.get("vpn_source") == "servers":
         if wants_vpn and not chosen_servers(cfg):

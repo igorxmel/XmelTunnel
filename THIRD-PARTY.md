@@ -8,5 +8,6 @@
 | [psutil](https://github.com/giampaolo/psutil) | processes and connections | BSD-3-Clause |
 | [tinyproxy](https://tinyproxy.github.io/) | installed on *your* server by the setup button | GPL v2 |
 | [sing-box](https://github.com/SagerNet/sing-box) | routing mode: downloaded from its official release on first use (SHA-256 pinned), and installed on *your* server by «Install on the server» | GPL v3 or later |
+| [russia-v2ray-rules-dat](https://github.com/runetfreedom/russia-v2ray-rules-dat) by runetfreedom | ready-made lists (`list:…` in profiles): downloaded when a profile uses them, refreshed daily, not shipped | GPL v3 |
 
 XmelTunnel itself is licensed under the GPL v3 (see LICENSE), the same as PyQt6 it is built on.

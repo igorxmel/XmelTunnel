@@ -5,6 +5,9 @@ target:
            routing mode (they go by Shadowsocks then).
   vpn    — through your VPN client's adapter; needs the routing mode.
   direct — your normal connection; needs the routing mode (useful when everything else goes elsewhere).
+  block  — refused (ads, trackers, telemetry); needs the routing mode.
+
+An entry «list:<id>» is a ready-made list (routing.LISTS), downloaded and updated by itself.
 
 entries are the user's lines as typed (comments kept); domains are derived from them for the PAC file.
 Apps are watched for leaks (server profiles only). Presets are just ready-made profiles.
@@ -22,7 +25,7 @@ import ipaddress
 import re
 
 METHODS = ("system", "claude_code")
-TARGETS = ("server", "vpn", "direct")
+TARGETS = ("server", "vpn", "direct", "block")
 
 PRESETS = [
     {
@@ -133,6 +136,27 @@ PRESETS = [
         "apps": [],
     },
     {
+        "id": "ru-blocked",
+        "name": "Blocked in Russia (list)",
+        "target": "vpn",
+        "entries": ["list:ru-blocked"],
+        "domains": [], "nets": [], "check_url": "", "apps": [],
+    },
+    {
+        "id": "ru-sites",
+        "name": "Russian sites (list)",
+        "target": "direct",
+        "entries": ["list:ru", "list:ru-inside"],
+        "domains": [], "nets": [], "check_url": "", "apps": [],
+    },
+    {
+        "id": "ads",
+        "name": "Ads and trackers",
+        "target": "block",
+        "entries": ["list:ads", "list:win-spy"],
+        "domains": [], "nets": [], "check_url": "", "apps": [],
+    },
+    {
         "id": "custom",
         "name": "Empty profile",
         "domains": [],
@@ -141,6 +165,9 @@ PRESETS = [
         "apps": [],
     },
 ]
+
+# presets whose names are words, not brands: shown translated
+TRANSLATED = ("custom", "blocked", "ru-blocked", "ru-sites", "ads")
 
 _DOMAIN = re.compile(r"^(?=.{1,253}$)([a-z0-9-]{1,63}\.)+[a-z]{2,63}$")
 
@@ -217,7 +244,7 @@ def counts(p: dict) -> dict:
 
     parsed = parse_list(p["entries"])
     return {"sites": len(parsed["domains"]), "apps": len(parsed["procs"]) + len(parsed["folders"]),
-            "nets": len(parsed["cidrs"])}
+            "nets": len(parsed["cidrs"]), "lists": len(parsed["lists"])}
 
 
 def needs_routing(p: dict) -> bool:
@@ -227,4 +254,4 @@ def needs_routing(p: dict) -> bool:
     if p["target"] != "server":
         return True
     parsed = parse_list(p["entries"])
-    return bool(parsed["procs"] or parsed["folders"] or parsed["cidrs"])
+    return bool(parsed["procs"] or parsed["folders"] or parsed["cidrs"] or parsed["lists"])

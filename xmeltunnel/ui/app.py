@@ -167,6 +167,8 @@ class ProfileRow(QWidget):
             parts.append(tr("programs: {n}", n=c["apps"]))
         if c["nets"]:
             parts.append(tr("subnets: {n}", n=c["nets"]))
+        if c["lists"]:
+            parts.append(tr("lists: {n}", n=c["lists"]))
         self.count.setText(" · ".join(parts))
         needs = profiles.needs_routing(profile) and not self.win.engine.cfg["route_enabled"]
         self.count.setToolTip(tr("Part of this profile works only while the VPN is connected.") if needs else "")
@@ -266,6 +268,11 @@ class VpnCard(QFrame):
         self.b_check_route.setCursor(Qt.CursorShape.PointingHandCursor)
         self.b_check_route.clicked.connect(win.engine.check_route)
         head.addWidget(self.b_check_route)
+        self.b_conns = QPushButton(tr("Connections…"), objectName="small")
+        self.b_conns.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.b_conns.setToolTip(tr("What goes where right now: every program and site with its path and traffic."))
+        self.b_conns.clicked.connect(self.open_connections)
+        head.addWidget(self.b_conns)
         self.b_reset_traffic = QPushButton(tr("Reset traffic"), objectName="small")
         self.b_reset_traffic.setCursor(Qt.CursorShape.PointingHandCursor)
         self.b_reset_traffic.setToolTip(tr("Start counting traffic from zero: on every path and every server."))
@@ -294,6 +301,12 @@ class VpnCard(QFrame):
             self.pills[key] = p
         self.paths_note = QLabel(tr("Shown while the VPN is connected."), objectName="note")
         pl.addWidget(self.paths_note)
+
+    def open_connections(self) -> None:
+        from xmeltunnel.ui.connections_dialog import ConnectionsDialog
+
+        ConnectionsDialog(self.win, self.win.engine).exec()
+        self.win.refresh()
 
     def open_servers(self) -> None:
         from xmeltunnel.ui.servers_dialog import ServersDialog
@@ -394,6 +407,7 @@ class VpnCard(QFrame):
         self.sub.style().polish(self.sub)
         self.b_retry_route.setVisible(cfg["route_enabled"] and status in ("error", "off"))
         self.b_check_route.setVisible(status == "running")
+        self.b_conns.setVisible(status == "running")
         self.b_reset_traffic.setVisible(any((cfg.get("traffic") or {}).values()))
         self.paths_note.setVisible(status != "running")
         for key, pill in self.pills.items():
@@ -569,7 +583,8 @@ class MainWindow(FramelessWindow):
         rest.addWidget(QLabel("→", objectName="kvKey"))
         self.default = QComboBox()
         for key, title in TARGET_TITLES:
-            self.default.addItem(tr(title), key)
+            if key != "block":  # «block everything else» would be a way to lose the internet, not a choice
+                self.default.addItem(tr(title), key)
         self.default.setCurrentIndex(max(0, self.default.findData(engine.cfg.get("route_default", "direct"))))
         self.default.currentIndexChanged.connect(lambda: engine.set_route_default(self.default.currentData()))
         rest.addWidget(self.default)
